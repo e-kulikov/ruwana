@@ -36,7 +36,8 @@ project isolation model where work tasks must die with their submodule.
 
 - Full task CRUD from the command line, scriptable and prompt-free (except
   `rm` confirmation, bypassed with `--force`).
-- TOML files as the single source of truth; SQLite as a rebuildable cache.
+- TOML files as the single — and only — source of truth. No derived state
+  (no database, no cache files) to keep consistent.
 - Per-project isolation: everything about a project's tasks lives under that
   project's directory and travels (or dies) with it.
 - Machine-parseable output (`--format json`) as a first-class surface.
@@ -48,6 +49,9 @@ project isolation model where work tasks must die with their submodule.
 - Recurring tasks, priorities, interactive editing (deferred — see Roadmap).
 - Preserving comments/formatting in hand-edited TOML files (see Task File
   Format → Canonical serialization).
+- A query index/cache. Measured at target scale, it costs more than it
+  saves — see Query Engine. The storage API is designed so one can be
+  added later without touching any command.
 
 ---
 
@@ -56,18 +60,18 @@ project isolation model where work tasks must die with their submodule.
 - **Agent-first interface**: every command must be unambiguous and
   scriptable. No interactive prompts (the sole exception, `rm`, has a
   documented `--force` bypass). Output must be parseable.
-- **File-system native**: TOML files are the source of truth. The SQLite
-  index is derived, not primary — it can always be rebuilt from files.
+- **File-system native**: TOML files are not just the source of truth —
+  they are the *only* state. Every command reads them directly; nothing can
+  ever be stale, and `git pull`, submodule updates, and hand edits are
+  visible immediately with no sync step.
 - **Project isolation**: tasks are scoped to projects via `--project`, which
   maps to a directory path within the wiki. Work tasks die with their
-  submodule. Each project carries its own index; there is no global state
-  outside `$WIKI_ROOT`.
+  submodule — trivially, since a project's `.ruwana/` directory is the
+  entirety of its task state.
 - **Human-readable at rest**: a task file opened in any editor is legible
   without tooling.
-- **Rebuild-safe**: `ruwana index --rebuild` fully reconstructs the SQLite
-  database from the TOML files at any time; nothing lives only in SQLite.
 - **Library-first**: all task logic (CRUD, ID/sub-task resolution, date
-  parsing, index sync) lives in the library layer, separate from the CLI
+  parsing, querying) lives in the library layer, separate from the CLI
   argument-parsing layer. The `ruwana` binary is a thin wrapper over that
   library. This is a v1 requirement, not a later refactor — it's what lets a
   future `ruwana tui` call the same functions directly instead of shelling
@@ -77,54 +81,93 @@ project isolation model where work tasks must die with their submodule.
 
 ## Architecture
 
-### Crate layout
+### Monorepo layout
 
-A single Cargo package with two targets:
+The repository is a monorepo of two packages — `ruwana-core` (library) and
+`ruwana-cli` (binary) — managed as a **Cargo workspace**. Cargo itself is
+the monorepo manager: for a pure-Rust repo of this size it already provides
+everything heavier managers (Bazel, Buck2, moon, Nx, cargo-make) exist to
+add for polyglot or very large repos — one shared `Cargo.lock` and unified
+dependency resolution, one `target/` cache with cross-crate incremental
+builds, `cargo build/test/clippy --workspace` as the single CI entry point,
+and `[workspace.dependencies]` / `[workspace.package]` / `[workspace.lints]`
+so versions, metadata, and lint policy are declared once and inherited. A
+build system layered on top would add configuration surface without adding
+capability; if the repo ever gains non-Rust components, a task runner can
+be added later without restructuring.
 
 ```
-ruwana/
-├── Cargo.toml
-├── src/
-│   ├── lib.rs          ← library crate: all logic lives here
-│   ├── main.rs         ← binary crate: clap parsing + calls into lib + printing
-│   ├── model.rs        ← Task, SubTask, Status types (serde)
-│   ├── store.rs        ← TOML file read/write, .ruwana dir handling
-│   ├── index.rs        ← SQLite index: open, sync, rebuild, staleness check
-│   ├── discover.rs     ← WIKI_ROOT walk, project discovery
-│   ├── resolve.rs      ← ID / title / compound-ID resolution
-│   ├── dates.rs        ← natural + explicit date parsing, EOD resolution
-│   ├── ids.rs          ← ID generation (8-char task, 4-char sub-task)
-│   └── ops.rs          ← command-level API: add, done, undone, list, edit, rm…
-├── hooks/              ← git hook templates (post-merge, post-checkout)
-└── tests/              ← integration tests (assert_cmd against a temp WIKI_ROOT)
+ruwana/                          ← workspace root
+├── Cargo.toml                   ← [workspace]: members = ["crates/*"],
+│                                   workspace.package, workspace.dependencies,
+│                                   workspace.lints
+├── Cargo.lock                   ← single lockfile for the whole workspace
+├── crates/
+│   ├── ruwana-core/             ← library crate: ALL task logic
+│   │   ├── Cargo.toml
+│   │   └── src/
+│   │       ├── lib.rs
+│   │       ├── model.rs         ← Task, SubTask, Status types (serde)
+│   │       ├── store.rs         ← storage API: load/save/delete tasks,
+│   │       │                       .ruwana dir handling (see Query Engine)
+│   │       ├── discover.rs      ← WIKI_ROOT walk, project discovery
+│   │       ├── query.rs         ← in-memory filtering and sorting
+│   │       ├── resolve.rs       ← ID / title / compound-ID resolution
+│   │       ├── dates.rs         ← natural + explicit date parsing, EOD resolution
+│   │       ├── ids.rs           ← ID generation (8-char task, 4-char sub-task)
+│   │       └── ops.rs           ← command-level API: add, done, undone, list…
+│   └── ruwana-cli/              ← binary crate; produces the `ruwana` binary
+│       ├── Cargo.toml           ← [[bin]] name = "ruwana"; depends on ruwana-core
+│       ├── src/
+│       │   ├── main.rs
+│       │   ├── args.rs          ← clap definitions (subcommands, aliases, groups)
+│       │   └── output.rs        ← text/JSON formatting of ops results
+│       └── tests/               ← integration tests (assert_cmd, temp WIKI_ROOT)
+└── docs/
 ```
 
-The binary (`main.rs`) does exactly three things: parse args with clap, call
-one `ops::*` function, format the result (text or JSON). No task logic in
-`main.rs`. The `ops` module's function signatures take plain Rust types (no
-clap types) and return `Result<T, Error>` with typed errors — this is the
-API a future TUI consumes.
+Boundary rules:
 
-*Why one package, not a workspace:* the lib/bin split inside one package
-already enforces the boundary (the binary can only use the library's public
-API). A workspace split (`ruwana-core` + `ruwana-cli`) is a mechanical
-refactor if the TUI ever wants a separate crate; doing it now adds
-ceremony with no v1 benefit.
+- `ruwana-core` has **no dependency on clap** and no knowledge of argv,
+  stdout, or exit codes. Its `ops` module takes plain Rust types and
+  returns `Result<T, ruwana_core::Error>` with typed errors — this is the
+  exact API a future `ruwana-tui` consumes (it would join `crates/` as a
+  third workspace member depending on `ruwana-core`).
+- `ruwana-cli` contains no task logic: it parses args (`args.rs`), calls
+  one `ops::*` function, and formats the result (`output.rs`). Mapping
+  typed core errors to the exit-1 messages in Error Handling lives here.
+- All file access goes through `store.rs`. The rest of the crate asks the
+  store for tasks; it does not open files itself. This is the seam where a
+  cache could be introduced later (see Query Engine) with zero changes to
+  `ops`, `query`, `resolve`, or the CLI.
+- Unit tests live beside the code in `ruwana-core`; end-to-end CLI tests
+  live in `ruwana-cli/tests/` and exercise the real binary against a temp
+  `WIKI_ROOT`.
+- Shared dependency versions are declared once in
+  `[workspace.dependencies]`; member crates reference them with
+  `dep = { workspace = true }`.
+
+*Why a workspace:* the two-crate split makes the library boundary a hard
+compile-time contract (`ruwana-core` cannot even see clap), gives the
+future TUI an obvious home as a third member crate, and keeps CLI-only
+dependencies out of the library's dependency tree.
 
 ### Dependencies
 
 | Concern | Crate | Notes |
 | --- | --- | --- |
-| CLI parsing | `clap` v4 (derive) | subcommands, aliases, arg groups for mutual exclusion |
+| CLI parsing | `clap` v4 (derive) | `ruwana-cli` only; subcommands, aliases, arg groups |
 | TOML | `toml` (serde) | canonical serialization; see Task File Format |
-| SQLite | `rusqlite` with `bundled` feature | no system sqlite dependency |
 | Dates/times | `chrono` | local-offset ISO 8601 timestamps |
 | Natural dates | `interim` | maintained fork of `chrono-english` (zk uses the Go analogue `tj/go-naturaldate`) |
 | Randomness | `rand` | ID generation |
 | JSON output | `serde_json` | `--format json` |
-| Errors | `thiserror` (lib) + `anyhow` (bin) | typed errors in the library API |
+| Errors | `thiserror` (core) + `anyhow` (cli) | typed errors in the library API |
 | Walking | `walkdir` | project discovery |
+| Parallel parse | `rayon` | parallelize TOML parsing across files (see Query Engine) |
 | Tests | `assert_cmd`, `predicates`, `tempfile` | integration tests |
+
+There is deliberately no SQLite dependency — see Query Engine.
 
 Explicit numeric-date parsing (`2024-03-05`, `05.12.2024`, `11/27/2024`) is
 hand-rolled (~30 lines) rather than delegated, because the separator itself
@@ -136,15 +179,14 @@ disambiguates day/month order — see Date Parsing.
 
 ```
 $WIKI_ROOT/<project>/.ruwana/
-├── index.db           ← SQLite index (gitignored, rebuilt automatically)
 ├── abc1de2f.toml      ← one file per task, named by ID
 ├── gh3ij4kl.toml
 └── ...
 ```
 
-`.ruwana/` lives inside each project directory. The `--project` flag
-specifies the project path relative to the wiki root (e.g.
-`godel/ai-practice`), which resolves to
+`.ruwana/` lives inside each project directory and contains nothing but
+task files. The `--project` flag specifies the project path relative to the
+wiki root (e.g. `godel/ai-practice`), which resolves to
 `$WIKI_ROOT/godel/ai-practice/.ruwana/`.
 
 `WIKI_ROOT` is read from the `WIKI_ROOT` environment variable, defaulting to
@@ -155,19 +197,18 @@ Rules:
 - The **project directory** must already exist — `ruwana` never creates
   project directories (`project path not found` otherwise). The `.ruwana/`
   directory inside it, however, is created on demand by the first `add`.
-- The index is **per project**: each `.ruwana/` has its own `index.db`.
-  There is no global database. This is what makes "tasks die with their
-  submodule" literally true — deleting or de-initializing a submodule
-  removes every trace of its tasks, index included.
+- Everything about a project's tasks is inside its `.ruwana/` directory and
+  is plain committed data. Deleting or de-initializing a submodule removes
+  every trace of its tasks; a fresh clone is immediately fully functional.
+  Nothing needs gitignoring.
 - `--project` must be a relative path with no `..` components; it is
   resolved strictly under `$WIKI_ROOT` (reject anything that escapes it).
 
 ### Project discovery
 
 Commands that operate across all projects (`list` without `--project`, ID
-lookup without `--project`, `index --rebuild` without `--project`) discover
-projects by walking `$WIKI_ROOT` recursively looking for `.ruwana`
-directories, with these rules:
+lookup without `--project`) discover projects by walking `$WIKI_ROOT`
+recursively looking for `.ruwana` directories, with these rules:
 
 - Skip hidden directories (dot-prefixed) during descent — except `.ruwana`
   itself, which is the match target. `.git` is therefore skipped for free.
@@ -175,9 +216,78 @@ directories, with these rules:
 - Follow the directory tree only (no symlink following), to keep the walk
   cheap and cycle-free.
 
-A personal wiki is small (hundreds of directories); a full walk per
-invocation is well under perceptible latency and avoids any registry file
-that could go stale.
+Measured cost (warm cache, ext4): ~0.3 ms at 10 projects, ~2 ms at 50
+projects — see Query Engine.
+
+---
+
+## Query Engine
+
+**There is no database.** Every command reads the TOML files it needs,
+directly, every time. Filtering, sorting, and title lookup happen in memory
+over parsed tasks (`query.rs`); ID lookup doesn't even parse — a task's ID
+*is* its filename, so resolving an ID is a `stat` of `<id>.toml` per
+discovered project.
+
+This is a measured decision, not a simplification shortcut. An earlier
+draft specified a per-project SQLite index with staleness detection,
+auto-rebuild, and git-hook triggers. Benchmarks on realistic fixtures
+(release build, warm cache, ext4; task files ~0.6–1.1 KB with wiki noise
+around them) showed the index cannot pay for itself at this tool's scale:
+
+| Operation (median) | 10 proj / 500 tasks | 50 proj / 5000 tasks |
+| --- | --- | --- |
+| Discover projects (walk) | ~0.3 ms | ~2 ms |
+| Parse **all** tasks + filter + sort (this design) | ~5–7 ms | ~65–75 ms (~23 ms with rayon) |
+| Per-project SQLite: open N DBs + query + merge | ~1.5 ms | ~11–21 ms |
+| Global SQLite: 1 DB, 1 query | ~0.2 ms | ~2 ms |
+| Index staleness check (readdir+stat, needed **every** command) | ~0.3 ms | ~3.4 ms |
+| Index rebuild (the stale path) | ~25 ms | ~150 ms |
+| ID lookup by filename `stat` (this design) | ~0.005 ms | ~0.05 ms |
+| ID lookup via SQLite | ~0.1 ms | ~0.15 ms |
+
+The structural findings behind the numbers:
+
+- **Correctness forces the index to do the walk anyway.** To be safe
+  against `git pull` and hand edits, every indexed command must
+  readdir+stat all task files first — the same syscall work direct parsing
+  starts with. The index only ever saves the *parse* step: ~5 ms.
+- **The index's failure-recovery path is slower than no index.** A rebuild
+  is parse-everything *plus* SQLite writes — every `git pull` would put the
+  indexed design on a path slower than this design's steady state.
+- **ID lookup is fastest with no index**, because the storage layout
+  already encodes the primary key in the filename (2–20× faster than the
+  SQLite lookup it would replace).
+- **SQL can't accelerate the hard filters anyway.** Tag matching against a
+  delimited text column is a table scan inside SQLite too; the in-memory
+  `Vec` filter does identical work without a schema.
+
+At the realistic scale (≤ ~1000 tasks) every command completes in
+single-digit milliseconds — below process-startup noise. At a 10× stress
+scale (5000 tasks) a cross-project `list` is ~23 ms with parallel parsing:
+still imperceptible. What the tool drops in exchange: the SQLite schema
+and dependency, staleness detection, auto-rebuild, an `index` subcommand,
+git hook templates, and a gitignore requirement — an entire consistency
+subsystem whose only job would have been defending a 5 ms saving.
+
+**Escape hatch.** All file access goes through `store.rs` (see Boundary
+rules). If a wiki ever grows past tens of thousands of tasks, a global
+read-through cache (SQLite in the XDG cache directory, keyed by
+canonicalized `WIKI_ROOT` — never inside the wiki) can be added behind
+that interface without changing any command, output, or file format. That
+is a P2+ possibility, deliberately unscheduled.
+
+**Unparseable files** encountered during a multi-task read (`list`, title
+resolution, ID collision checks) are skipped with a warning on stderr
+(`skipping unparseable task file: <path>: <error>`); one broken file must
+not brick the whole wiki. A command that *directly targets* a broken file
+(`show abc1de2f`) fails loudly instead — see Error Handling.
+
+**Concurrency.** `ruwana` assumes a single user but not a single process
+(an agent and a human can race). Task-file writes are atomic (temp file +
+rename, see Task File Format), and with no derived state there is nothing
+to get out of sync: the worst case for a racing read is seeing the file as
+it was a moment ago. No lock files, no busy-timeouts.
 
 ---
 
@@ -229,7 +339,7 @@ Field semantics:
   belonging to the task — it's the `<project>` path segment the file already
   lives under (`$WIKI_ROOT/<project>/.ruwana/<id>.toml`); storing it again
   would be a duplicate that could drift. Commands read it off the file's
-  path (or the index's `project` column).
+  path.
 
 `source` is a separate, structured field from `related`: it's specifically
 what `--source` on `add`/`edit` writes to, and what `--source` on `list`
@@ -246,9 +356,9 @@ in-memory task via serde — fields in the order shown above, sub-tasks as
 trailing `[[tasks]]` blocks. Any write rewrites the whole file in canonical
 form. Consequence: TOML comments and bespoke formatting added by hand do
 **not** survive the next `ruwana` mutation of that file. Hand-editing is
-supported (the file parses fine and the stale-index fallback picks it up)
-but hand-*decorating* is not. Anything worth keeping belongs in
-`description` or `related`.
+supported (the file parses fine and is picked up immediately, since there
+is no cache to refresh) but hand-*decorating* is not. Anything worth
+keeping belongs in `description` or `related`.
 
 **Writes are atomic**: write to `<id>.toml.tmp` in the same directory, then
 rename over the target. A crash mid-write never leaves a corrupt task file.
@@ -260,109 +370,15 @@ with the parent ID (see "Addressing a Sub-task").
 
 ---
 
-## SQLite Schema
-
-Each project's `index.db`:
-
-```sql
-CREATE TABLE meta (
-  key   TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
--- rows: ('schema_version', '1')
-
-CREATE TABLE todos (
-  id          TEXT PRIMARY KEY,
-  project     TEXT NOT NULL,   -- derived from the directory path, not stored in TOML
-  title       TEXT NOT NULL,
-  status      TEXT NOT NULL DEFAULT 'open',  -- 'open' | 'done'
-  due         TEXT,            -- RFC 3339 with offset, or NULL
-  tags        TEXT,            -- ',tag1,tag2,' — comma-wrapped, see below
-  source      TEXT,            -- same encoding as tags
-  created_at  TEXT NOT NULL,   -- RFC 3339 with offset
-  modified_at TEXT NOT NULL,
-  file_path   TEXT NOT NULL,   -- absolute path to the .toml file
-  file_mtime  INTEGER NOT NULL,-- mtime (ns since epoch) at index time
-  file_size   INTEGER NOT NULL -- size in bytes at index time
-);
-
-CREATE INDEX idx_status ON todos(status);
-CREATE INDEX idx_due    ON todos(due);
-```
-
-- `tags`/`source` are stored **comma-wrapped** (`,a,b,` — leading and
-  trailing delimiter included) so exact-element matching is a plain
-  `tags LIKE '%,' || ? || ',%'` with no substring false positives (`ok`
-  must not match `okr`). NULL when empty. Commas inside tag/source values
-  are rejected at input time (see Validation).
-- `file_mtime`/`file_size` power staleness detection (see Index Sync).
-- No `project` index — within one per-project database the column is
-  constant; it exists so rows from multiple databases can be merged in
-  memory without re-deriving the project from the path.
-- `schema_version` mismatch (older/newer binary) triggers a silent full
-  rebuild of that database, same path as a missing index.
-
-No separate table for sub-tasks. Sub-tasks aren't indexed individually — a
-`<task-id>:<subtask-id>` lookup resolves `task-id` against `todos.file_path`
-exactly as a normal ID lookup does, then reads/mutates the matching
-`[[tasks]]` entry directly in the TOML file. The file stays the single
-source of truth for sub-task state, and `index --rebuild` needs no schema
-change.
-
----
-
-## Index Sync
-
-`index.db` is **gitignored** — never committed. It's a derived cache: a
-fresh clone or a machine missing it just triggers a rebuild. The wiki's
-`.gitignore` should contain `**/.ruwana/index.db`.
-
-Three layers keep it correct:
-
-1. **Inline writes.** Every mutation made through `ruwana` updates the index
-   in the same process, right after the TOML file is written (including
-   refreshing `file_mtime`/`file_size`). Updating the index is the last
-   step of `add`/`done`/`undone`/`edit`/`rm`, not a background job.
-
-2. **Git hooks** (`post-merge`, `post-checkout`) call
-   `ruwana index --rebuild --project <path>`, so a `git pull` /
-   `submodule update` / branch switch resyncs the index as part of the git
-   operation. Templates ship in the repo's `hooks/` directory; installation
-   is manual (copy or symlink into `.git/hooks/`), documented in the README
-   and CLAUDE.md. This is convenience, not correctness — layer 3 guarantees
-   correctness with no hooks installed.
-
-3. **Stale-index fallback.** Before serving any command from a project's
-   index, `ruwana` compares the directory's actual state against the index:
-
-   - List `.ruwana/*.toml` and compare the set of `(path, mtime_ns, size)`
-     triples against the indexed `(file_path, file_mtime, file_size)` rows.
-   - Any difference — new file, missing file, changed mtime or size —
-     triggers a silent rebuild of **that project's** index before the
-     command proceeds (`index stale, rebuilding...` on stderr).
-   - A missing or wrong-schema-version `index.db` triggers the same rebuild
-     (`index not found, rebuilding...`).
-
-   The check is one `readdir` + `stat` per file per invocation — negligible
-   for personal-wiki scale — and makes correctness independent of hooks and
-   robust against hand edits.
-
-**Concurrency.** `ruwana` assumes a single user but not a single process
-(an agent and a human can race). SQLite is opened with a 5-second
-`busy_timeout`; the atomic TOML rename makes file writes safe. There is no
-cross-file transactionality — the worst case for a true race is a stale
-index row, which layer 3 self-heals on the next command. No lock files.
-
----
-
 ## ID Generation
 
 - Task IDs: 8 characters from `[a-z0-9]` (36 symbols; 36⁸ ≈ 2.8 × 10¹²),
   generated from a CSPRNG. Example: `a3bc9f2e`.
-- On generation, the ID is checked against every discovered project's index
-  (collision → regenerate; at this keyspace a collision is effectively
-  never, but the check is one query per project and keeps "globally unique"
-  honest).
+- On generation, global uniqueness is checked by testing `<id>.toml`
+  existence in every discovered project's `.ruwana/` (one `stat` per
+  project; collision → regenerate). At this keyspace a collision is
+  effectively never, but the check is nearly free and keeps "globally
+  unique" honest.
 - IDs are never reused: deletion removes the file, and new IDs are random,
   not sequential.
 - Sub-task IDs: same charset, 4 characters (36⁴ ≈ 1.68 million), unique
@@ -376,11 +392,14 @@ index row, which layer 3 self-heals on the next command. No lock files.
 
 Every command that takes `<id-or-title>` resolves it in this order:
 
-1. If the argument is exactly 8 chars of `[a-z0-9]`, try it as an ID first
-   (against the given project's index, or every discovered project's index
-   when `--project` is absent). Exactly one match → resolved.
+1. If the argument is exactly 8 chars of `[a-z0-9]`, try it as an ID first:
+   check for `<id>.toml` in the given project's `.ruwana/` (or every
+   discovered project's, when `--project` is absent). The ID is the
+   filename, so this is a `stat`, not a parse. Exactly one match →
+   resolved.
 2. Otherwise (or if no ID matched), treat it as a title: **exact,
-   case-sensitive** string match on `title`, scoped by `--project` if given.
+   case-sensitive** string match on `title` across parsed tasks, scoped by
+   `--project` if given.
    - 0 matches → error `no task found with title: "..."`.
    - > 1 matches → error `ambiguous title; use --project to narrow or use ID`
      (the error lists the matching IDs and projects on stderr).
@@ -410,8 +429,8 @@ Rules:
 
 - `--id` and the positional `<id-or-title>` are mutually exclusive
   (enforced as a clap arg group).
-- The compound form resolves `<task-id>` first (via the index, like any ID
-  lookup), then finds `<subtask-id>` among that task's `[[tasks]]` entries.
+- The compound form resolves `<task-id>` first (filename lookup, like any
+  ID), then finds `<subtask-id>` among that task's `[[tasks]]` entries.
 - `--project` stays optional with `--id`. Titles never resolve to sub-tasks
   (they have no title of their own), so `--id` is the only way to target
   one.
@@ -425,8 +444,8 @@ Rules:
   `text`). `--description`, `--due`, `--tag`, `--remove-tag`, `--source`,
   `--remove-source` are whole-task flags and are rejected with a compound
   `--id`.
-- `add`, `list`, `show`, `tasks`, and `index` don't take `--id` — they
-  operate on whole tasks (or, for `tasks`, list all sub-tasks at once).
+- `add`, `list`, `show`, and `tasks` don't take `--id` — they operate on
+  whole tasks (or, for `tasks`, list all sub-tasks at once).
 
 ---
 
@@ -482,10 +501,9 @@ way (end of day, local timezone) and compare instants:
 Applied on `add` and `edit`, all producing exit-1 errors:
 
 - `title` / sub-task `text`: non-empty after trimming.
-- `tags` / `source` values: non-empty, no commas (reserved as the index
-  delimiter), no leading/trailing whitespace (trimmed). Duplicate values
-  are deduplicated silently (adding an existing tag is a no-op, not an
-  error; removing a missing tag likewise).
+- `tags` / `source` values: non-empty, no leading/trailing whitespace
+  (trimmed). Duplicate values are deduplicated silently (adding an
+  existing tag is a no-op, not an error; removing a missing tag likewise).
 - `--project`: relative, no `..`, resolves to an existing directory under
   `$WIKI_ROOT`.
 
@@ -579,7 +597,7 @@ timezone), `--created-before/-after <date>`, `--modified-before/-after
 <date>`.
 
 **Tag filter:** `--tag <name>` — repeatable, **AND** semantics (task must
-have all given tags).
+have all given tags). Exact-element match — tag `ok` never matches `okr`.
 
 **Source filter:** `--source <name>` — repeatable, **OR** semantics (task
 has any given source). Deliberately opposite of `--tag`: the use case is
@@ -621,8 +639,8 @@ when nothing matches:
 ```
 
 `due` is `null` when unset; `tags`/`source` are `[]` when empty. `list`
-serves from the index and does not include `description`, `related`, or
-sub-tasks — use `show` for the full record.
+deliberately excludes `description`, `related`, and sub-tasks to keep the
+listing compact — use `show` for the full record.
 
 ### `ruwana show`
 
@@ -688,31 +706,14 @@ ruwana rm <id-or-title> [--project <path>] [--force|--yes]
 ruwana rm --id <task-id>[:<subtask-id>] [--project <path>] [--force|--yes]
 ```
 
-Whole task: removes the TOML file and its index row. Sub-task: removes just
-that `[[tasks]]` entry and bumps `modified`.
+Whole task: removes the TOML file. Sub-task: removes just that `[[tasks]]`
+entry and bumps `modified`.
 
 Prompts for confirmation (`delete task a3bc9f2e "…"? [y/N]` on stderr,
 reads stdin) unless `--force` (alias `--yes`) is passed. If stdin is not a
 TTY and `--force` is absent, `rm` **fails** with exit 1
 (`refusing to delete without --force in non-interactive mode`) rather than
 hanging — agents must pass `--force`, and this is documented in CLAUDE.md.
-
-### `ruwana index`
-
-Manage the SQLite index.
-
-```
-ruwana index --rebuild [--project <path>]
-```
-
-- `--rebuild` — drop and recreate the index by scanning `.ruwana/*.toml`
-  files. Without `--project`, rebuilds every discovered project's index.
-- A TOML file that fails to parse during rebuild is **skipped with a
-  warning on stderr** (`skipping unparseable task file: <path>: <error>`);
-  the rebuild continues and exits 0. A broken file must not brick the whole
-  project's index.
-
-Useful after: manual edits, git clone, submodule init, index corruption.
 
 ---
 
@@ -734,8 +735,8 @@ Useful after: manual edits, git clone, submodule init, index corruption.
 All errors print a single-line message to stderr and exit non-zero. Exit
 code is uniformly **1** for all user-facing errors (agents branch on
 zero/non-zero plus the message; finer-grained codes are not needed and
-would be one more thing to keep stable). Internal failures (I/O, SQLite)
-also exit 1 with the underlying error in the message.
+would be one more thing to keep stable). Internal failures (I/O) also exit
+1 with the underlying error in the message.
 
 | Situation                                         | Exit | Message |
 | ------------------------------------------------- | ---- | ------- |
@@ -753,31 +754,29 @@ also exit 1 with the underlying error in the message.
 | `edit` with no field flags                        | 1    | `edit requires at least one field to change` |
 | `rm` non-interactive without `--force`            | 1    | `refusing to delete without --force in non-interactive mode` |
 | Task file unparseable when directly targeted      | 1    | `cannot parse task file: <path>: <error>` |
-| Index missing (auto-rebuild)                      | 0    | `index not found, rebuilding...` (stderr only) |
-| Index stale (auto-rebuild)                        | 0    | `index stale, rebuilding...` (stderr only) |
+| Task file unparseable during a multi-task read    | 0    | `skipping unparseable task file: <path>: <error>` (stderr only; command proceeds) |
 
-The index is auto-rebuilt silently on mismatch; operations never fail
-because of a stale index. Informational notices always go to stderr so
-stdout stays clean for parsing.
+Informational notices always go to stderr so stdout stays clean for
+parsing.
 
 ---
 
 ## Testing
 
-- **Unit tests (library):** date parsing (table-driven: every documented
-  format, both timezone edge directions, impossible dates), ID generation
-  (charset, length, collision-retry), resolution rules (ID vs title,
-  ambiguity, compound `--id`), tag/source validation, comma-wrapped
-  matching.
+- **Unit tests (`ruwana-core`):** date parsing (table-driven: every
+  documented format, both timezone edge directions, impossible dates), ID
+  generation (charset, length, collision-retry), resolution rules (ID vs
+  title, ambiguity, compound `--id`), tag/source validation, exact-element
+  tag matching (`ok` vs `okr`), query filters and sort order.
 - **Round-trip property:** serialize → parse → serialize is a fixpoint for
-  any valid task; `index --rebuild` over a directory of files produces an
-  index equivalent to the one built by inline writes.
-- **Integration tests (`tests/`, via `assert_cmd` + `tempfile`):** each
-  command end-to-end against a temp `WIKI_ROOT` — including the stale-index
-  fallback (touch a file behind the index's back, assert the next `list`
-  still returns correct data and prints the rebuild notice), the
-  non-interactive `rm` refusal, `--format json` schema shape, and exit
-  codes/messages from the table above.
+  any valid task.
+- **Integration tests (`ruwana-cli/tests/`, via `assert_cmd` +
+  `tempfile`):** each command end-to-end against a temp `WIKI_ROOT` —
+  including out-of-band changes (add/edit/delete a task file behind the
+  tool's back, assert the next `list` reflects it immediately), the
+  skip-with-warning path for a corrupt file, the non-interactive `rm`
+  refusal, `--format json` schema shape, and exit codes/messages from the
+  table above.
 - Timezone-sensitive tests pin `TZ` explicitly rather than inheriting the
   host's.
 
@@ -790,25 +789,24 @@ stdout stays clean for parsing.
 - [ ] `add`, `done`, `undone`, `list`, `rm`, `show`, `tasks`, `edit` + all aliases
 - [ ] `--project` flag on all write commands; project-path validation
 - [ ] ID + title resolution for `done`, `undone`, `rm`, `show`, `tasks`, `edit`
-- [ ] Per-project SQLite index with mtime/size staleness detection and
-      auto-rebuild on missing/stale/schema-mismatch
-- [ ] `ruwana index --rebuild` (scoped and global), unparseable files
-      skipped with warning
+      (ID = filename `stat`; title = in-memory exact match)
+- [ ] Direct-read query engine: project discovery walk, parallel TOML
+      parse, in-memory filter/sort; corrupt files skipped with warning
 - [ ] Human-friendly (`interim`) and explicit (separator-disambiguated)
       date parsing
 - [ ] Due dates resolved to end-of-day in the saving machine's local
       timezone, stored with explicit offset
 - [ ] `--overdue`, `--urgent`, all date-range filters, `--due` exact match
-- [ ] Tag filtering (AND) and source filtering (OR) on `list`
+- [ ] Tag filtering (AND, exact-element) and source filtering (OR) on `list`
 - [ ] `source` field (`--source` on `add`/`edit`, `--remove-source`,
       `--source` filter)
 - [ ] Sub-tasks via `--task`, each with a generated 4-char `id`
 - [ ] `--id <task-id>[:<subtask-id>]` on `done`, `undone`, `rm`, `edit`,
       with whole-task-flag rejection on sub-task edits
 - [ ] `WIKI_ROOT` env var (default `~/wiki`)
-- [ ] `index.db` gitignored; git hook templates (`post-merge`,
-      `post-checkout`) in `hooks/`
-- [ ] Library/binary separation per Architecture (no TUI code, just the boundary)
+- [ ] Cargo workspace with `ruwana-core` / `ruwana-cli` separation per
+      Architecture; all file access behind `store.rs` (the future-cache
+      seam)
 - [ ] `--format json` on `list` and `show`
 - [ ] `--sort` on `list` (due, created, modified, title)
 - [ ] `--force`/`--yes` on `rm`; non-interactive refusal without it
@@ -826,10 +824,11 @@ stdout stays clean for parsing.
 
 ### Future (P2 — planned, after P0 and P1)
 
-- [ ] `ruwana tui` — interactive terminal UI (likely `ratatui`): list
-      navigation, toggle done/undone, inline edit, sub-task view, delete
-      with confirmation. Must call the library crate's `ops` API directly —
-      never shell out to the CLI or reimplement task logic.
+- [ ] `ruwana tui` — interactive terminal UI (likely `ratatui`), added as a
+      third workspace crate: list navigation, toggle done/undone, inline
+      edit, sub-task view, delete with confirmation. Must call
+      `ruwana-core`'s `ops` API directly — never shell out to the CLI or
+      reimplement task logic.
 - [ ] `--priority` field (low/medium/high) as a separate axis from urgency:
       `--urgent`/`--overdue` are about *when*; priority is about how much
       it matters regardless of date.
@@ -837,7 +836,9 @@ stdout stays clean for parsing.
 ### Someday / Maybe
 
 Not planned, not ruled out: notifications/reminders, sync to external
-services (Linear, GitHub Issues), GUI (web or native).
+services (Linear, GitHub Issues), GUI (web or native), and a global
+read-through query cache (SQLite in the XDG cache dir, behind `store.rs`)
+if a wiki ever outgrows the direct-read engine — see Query Engine.
 
 ### Out of Scope
 
