@@ -103,8 +103,8 @@ ruwana/                          ← workspace root
 │                                   workspace.lints
 ├── Cargo.lock                   ← single lockfile for the whole workspace
 ├── crates/
-│   ├── ruwana-core/             ← library crate: ALL task logic
-│   │   ├── Cargo.toml
+│   ├── core/                    ← library crate: ALL task logic
+│   │   ├── Cargo.toml           ← name = "ruwana-core" (see naming note)
 │   │   └── src/
 │   │       ├── lib.rs
 │   │       ├── model.rs         ← Task, SubTask, Status types (serde)
@@ -116,8 +116,9 @@ ruwana/                          ← workspace root
 │   │       ├── dates.rs         ← natural + explicit date parsing, EOD resolution
 │   │       ├── ids.rs           ← ID generation (8-char task, 4-char sub-task)
 │   │       └── ops.rs           ← command-level API: add, done, undone, list…
-│   └── ruwana-cli/              ← binary crate; produces the `ruwana` binary
-│       ├── Cargo.toml           ← [[bin]] name = "ruwana"; depends on ruwana-core
+│   └── cli/                     ← binary crate; produces the `ruwana` binary
+│       ├── Cargo.toml           ← name = "ruwana-cli", [[bin]] name = "ruwana";
+│       │                           depends on ruwana-core
 │       ├── src/
 │       │   ├── main.rs
 │       │   ├── args.rs          ← clap definitions (subcommands, aliases, groups)
@@ -125,6 +126,16 @@ ruwana/                          ← workspace root
 │       └── tests/               ← integration tests (assert_cmd, temp WIKI_ROOT)
 └── docs/
 ```
+
+**Naming.** Directory names are unprefixed (`crates/core`, `crates/cli`) —
+the `crates/` path already namespaces them, so repeating `ruwana-` there
+would be noise. Package names keep the prefix (`ruwana-core`,
+`ruwana-cli`) because they live in Cargo's flat, global namespace: Cargo
+rejects a package named `core` outright (it shadows Rust's built-in
+`core` crate), and unprefixed names would collide on crates.io if ever
+published. Directory and package name are independent in Cargo, so this
+costs nothing — `members = ["crates/*"]` picks them up regardless, and
+imports read `use ruwana_core::…`.
 
 Boundary rules:
 
@@ -141,7 +152,7 @@ Boundary rules:
   cache could be introduced later (see Query Engine) with zero changes to
   `ops`, `query`, `resolve`, or the CLI.
 - Unit tests live beside the code in `ruwana-core`; end-to-end CLI tests
-  live in `ruwana-cli/tests/` and exercise the real binary against a temp
+  live in `crates/cli/tests/` and exercise the real binary against a temp
   `WIKI_ROOT`.
 - Shared dependency versions are declared once in
   `[workspace.dependencies]`; member crates reference them with
@@ -770,7 +781,7 @@ parsing.
   tag matching (`ok` vs `okr`), query filters and sort order.
 - **Round-trip property:** serialize → parse → serialize is a fixpoint for
   any valid task.
-- **Integration tests (`ruwana-cli/tests/`, via `assert_cmd` +
+- **Integration tests (`crates/cli/tests/`, via `assert_cmd` +
   `tempfile`):** each command end-to-end against a temp `WIKI_ROOT` —
   including out-of-band changes (add/edit/delete a task file behind the
   tool's back, assert the next `list` reflects it immediately), the
