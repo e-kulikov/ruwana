@@ -214,6 +214,12 @@ Rules:
   Nothing needs gitignoring.
 - `--project` must be a relative path with no `..` components; it is
   resolved strictly under `$WIKI_ROOT` (reject anything that escapes it).
+- Path checks are **lexical only**: symlinks inside the wiki are trusted
+  and followed. A symlinked project directory that points outside
+  `$WIKI_ROOT` is a deliberate user setup, not an attack surface — this is
+  a single-user tool operating on the user's own data, so no
+  canonicalization or symlink-escape guard is performed (explicit decision
+  from the 2026-07-03 adversarial review).
 
 ### Project discovery
 
@@ -295,10 +301,15 @@ not brick the whole wiki. A command that *directly targets* a broken file
 (`show abc1de2f`) fails loudly instead — see Error Handling.
 
 **Concurrency.** `ruwana` assumes a single user but not a single process
-(an agent and a human can race). Task-file writes are atomic (temp file +
-rename, see Task File Format), and with no derived state there is nothing
-to get out of sync: the worst case for a racing read is seeing the file as
-it was a moment ago. No lock files, no busy-timeouts.
+(an agent and a human can race). Task-file writes are atomic (pid-unique
+temp file + rename, see Task File Format), and with no derived state there
+is nothing to get out of sync: the worst case for a racing read is seeing
+the file as it was a moment ago, and the worst case for two racing
+*mutations* of the same task is **last-writer-wins** — the slower write
+replaces the faster one wholesale, never a corrupted mix. That trade-off
+is accepted deliberately for a single-user tool (confirmed in the
+2026-07-03 adversarial review): no lock files, no busy-timeouts, no
+compare-and-swap.
 
 ---
 
@@ -371,8 +382,12 @@ supported (the file parses fine and is picked up immediately, since there
 is no cache to refresh) but hand-*decorating* is not. Anything worth
 keeping belongs in `description` or `related`.
 
-**Writes are atomic**: write to `<id>.toml.tmp` in the same directory, then
-rename over the target. A crash mid-write never leaves a corrupt task file.
+**Writes are atomic**: write to a uniquely named temp file
+(`<id>.toml.<pid>.tmp`) in the same directory, then rename over the target.
+A crash mid-write never leaves a corrupt task file, and because the temp
+name includes the writing process's pid, two racing writers can never
+share a temp path — a race ends with one complete file cleanly replacing
+the other, never a mix (see Query Engine → Concurrency).
 
 **Sub-task IDs.** Each `[[tasks]]` entry has its own `id` — 4 characters
 instead of 8 (see ID Generation), since a sub-task ID only needs to be
@@ -568,10 +583,12 @@ ruwana done <id-or-title> [--project <path>]
 ruwana done --id <task-id>[:<subtask-id>] [--project <path>]
 ```
 
-- Whole task: `status` → `"done"`, `modified` bumped. Already-done → no-op,
-  still exit 0 (idempotent — agents retry).
+- Whole task: `status` → `"done"`, `modified` bumped. Already-done → a
+  **true no-op**, still exit 0: the file is not rewritten and `modified`
+  is not bumped, so retries never churn the file or git history
+  (idempotent — agents retry).
 - Sub-task: entry's `done` → `true`, parent's `modified` bumped, parent's
-  `status` untouched.
+  `status` untouched. Already-done sub-task → the same true no-op.
 
 **Output:** confirmation with task ID and title (and sub-task ID/text if
 addressed), e.g. `done a3bc9f2e  Review Q3 OKRs`.
