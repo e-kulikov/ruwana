@@ -19,7 +19,7 @@ pub struct Filter {
     pub tags: Vec<String>,
     /// OR semantics.
     pub sources: Vec<String>,
-    /// Exact calendar-date match in the querying machine's timezone.
+    /// Exact calendar-date match, read in the stored instant's own offset.
     pub due_on: Option<NaiveDate>,
     pub created_before: Option<DateTime<FixedOffset>>,
     pub created_after: Option<DateTime<FixedOffset>>,
@@ -36,14 +36,15 @@ pub enum SortKey {
     Title,
 }
 
-/// Calendar date of `instant`, in its own stored offset. `due` instants are
-/// always produced by `end_of_day(date, &Local)`, which resolves DST
-/// correctly *for that date* — so `instant`'s own offset already is the
-/// querying machine's local timezone on that day (spec: "today where I'm
-/// asking from" rule). Re-projecting through a *different* instant's
-/// offset (e.g. "now"'s, when "now" and `instant` straddle a DST boundary)
-/// silently shifts the calendar date — that was a real bug here; don't
-/// reintroduce it.
+/// Calendar date of `instant`, taken from the instant's own baked-in
+/// offset — the offset that was local at the moment it was saved — never
+/// reprojected through a different instant's offset (e.g. "now"'s). This
+/// avoids DST reprojection errors: reprojecting through a different
+/// instant's offset when the two straddle a DST boundary silently shifts
+/// the calendar date (a real bug here; don't reintroduce it). When a due
+/// date was saved from a different timezone than the querying machine's
+/// current one, the resulting calendar date reflects where/when it was
+/// set, not the querying machine's current local date.
 fn local_date(instant: DateTime<FixedOffset>) -> NaiveDate {
     instant.date_naive()
 }
@@ -276,7 +277,7 @@ mod tests {
     }
 
     #[test]
-    fn due_on_matches_calendar_date_in_query_timezone() {
+    fn due_on_matches_calendar_date_in_stored_offset() {
         let f = Filter {
             due_on: chrono::NaiveDate::from_ymd_opt(2024, 3, 13),
             status: StatusFilter::All,
@@ -285,6 +286,31 @@ mod tests {
         assert_eq!(
             ids(&apply(fixture(), &f, SortKey::Title, now())),
             vec!["duetoday"]
+        );
+    }
+
+    #[test]
+    fn due_calendar_date_is_stable_across_dst_offsets() {
+        // Winter due (+01:00) queried from a summer `now` (+02:00): the
+        // calendar date must come from the stored instant's own offset,
+        // never reprojected through `now`'s fixed offset (which would
+        // shift it to Jan 16).
+        let winter_due = rec(
+            "dstguard1",
+            Status::Open,
+            Some("2024-01-15T23:59:59+01:00"),
+            &[],
+            &[],
+        );
+        let summer_now = dt("2024-07-01T12:00:00+02:00");
+        let f = Filter {
+            due_on: chrono::NaiveDate::from_ymd_opt(2024, 1, 15),
+            status: StatusFilter::All,
+            ..Filter::default()
+        };
+        assert_eq!(
+            ids(&apply(vec![winter_due], &f, SortKey::Title, summer_now)),
+            vec!["dstguard1"]
         );
     }
 

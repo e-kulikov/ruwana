@@ -6,16 +6,19 @@ use serde_json::json;
 
 /// One line per task, column-aligned:
 /// `a3bc9f2e  godel/ai-practice  Review Q3 OKRs        due: 2024-03-01`
-/// Due column: `due: YYYY-MM-DD` (calendar date, querying timezone),
-/// `overdue` for past-due open tasks, empty when no due date.
+/// Due column: `due: YYYY-MM-DD` (calendar date, read in the stored
+/// instant's own offset), `overdue` for past-due open tasks, empty when no
+/// due date.
 ///
-/// `due` is rendered from its own stored offset, not reprojected through
-/// `now`'s: `due` is always `end_of_day(date, &Local)`, which already
-/// resolves DST correctly for its own date, so its offset *is* the
-/// querying machine's local timezone on that day. Reprojecting through
-/// `now.offset()` shifts the calendar date whenever `due` and `now`
-/// straddle a DST boundary (e.g. a winter due date queried in summer) —
-/// that was a real bug here; don't reintroduce it.
+/// `due` is rendered from its own stored offset — the offset that was
+/// local at the moment it was saved — never reprojected through `now`'s.
+/// This avoids DST reprojection errors: reprojecting through `now`'s
+/// offset shifts the calendar date whenever `due` and `now` straddle a DST
+/// boundary (e.g. a winter due date queried in summer) — that was a real
+/// bug here; don't reintroduce it. When a due date was saved from a
+/// different timezone than the querying machine's current one, the
+/// rendered date reflects where/when it was set, not the querying
+/// machine's current local date.
 pub fn list_text(records: &[TaskRecord], now: DateTime<FixedOffset>) -> String {
     let rows: Vec<(String, String, String, String)> = records
         .iter()
