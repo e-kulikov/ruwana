@@ -63,5 +63,8 @@ mod tests {
         assert!(parse_explicit("next friday").is_none());
         assert!(parse_explicit("Feb 3").is_none());
         assert!(parse_explicit("today").is_none());
+        assert!(parse_explicit("3/4 done").is_none());
+        assert!(parse_explicit("mid-march").is_none());
+        assert!(parse_explicit("v1.2.3x").is_none());
     }
 }
