@@ -1,6 +1,7 @@
 use crate::discover::discover_projects;
 use crate::ids;
 use crate::model::{Status, SubTask, Task};
+use crate::query::{self, Filter, SortKey};
 use crate::resolve::{self, Resolved, Selector};
 use crate::store::{Store, TaskRecord, Warning};
 use crate::Error;
@@ -265,6 +266,44 @@ pub fn remove(store: &Store, resolved: &Resolved, now: DateTime<FixedOffset>) ->
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ListQuery {
+    pub project: Option<String>,
+    pub filter: Filter,
+    pub sort: SortKey,
+}
+
+/// Gather records (one project, or every discovered project), then
+/// filter + sort in memory (spec: Query Engine).
+pub fn list(
+    store: &Store,
+    q: &ListQuery,
+    now: DateTime<FixedOffset>,
+) -> Result<(Vec<TaskRecord>, Vec<Warning>), Error> {
+    let projects = match &q.project {
+        Some(p) => {
+            store.validate_project(p)?;
+            vec![p.clone()]
+        }
+        None => discover_projects(store.wiki_root()),
+    };
+    let mut records = Vec::new();
+    let mut warnings = Vec::new();
+    for project in &projects {
+        let (mut project_records, mut project_warnings) = store.load_project(project)?;
+        records.append(&mut project_records);
+        warnings.append(&mut project_warnings);
+    }
+    Ok((query::apply(records, &q.filter, q.sort, now), warnings))
+}
+
+/// Resolve one task and return it with the verbatim TOML file contents.
+pub fn show(store: &Store, selector: &Selector, project: Option<&str>) -> Result<(Resolved, String), Error> {
+    let resolved = resolve::resolve(store, selector, project)?;
+    let raw = store.read_raw(&resolved.record.path)?;
+    Ok((resolved, raw))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -492,5 +531,64 @@ mod tests {
         let after = store.load("proj", &t.id).unwrap().task;
         assert!(after.tasks.is_empty());
         assert_eq!(after.modified, later());
+    }
+
+    use crate::query::{Filter, StatusFilter};
+
+    #[test]
+    fn list_spans_all_projects_and_respects_project_scope() {
+        let (dir, store) = wiki();
+        std::fs::create_dir_all(dir.path().join("other")).unwrap();
+        add(&store, "proj", new_task("In proj"), now()).unwrap();
+        add(&store, "other", new_task("In other"), now()).unwrap();
+
+        let (all, warnings) = list(&store, &ListQuery::default(), now()).unwrap();
+        assert_eq!(all.len(), 2);
+        assert!(warnings.is_empty());
+
+        let scoped_query = ListQuery { project: Some("other".into()), ..ListQuery::default() };
+        let (scoped, _) = list(&store, &scoped_query, now()).unwrap();
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].task.title, "In other");
+    }
+
+    #[test]
+    fn list_applies_filter_and_propagates_warnings() {
+        let (dir, store) = wiki();
+        let t = add(&store, "proj", new_task("Open task"), now()).unwrap();
+        add(&store, "proj", new_task("Done task"), now())
+            .and_then(|d| set_done(&store, &by_id(&d.id), None, true, now()))
+            .unwrap();
+        std::fs::write(dir.path().join("proj/.ruwana/broken12.toml"), "x = [").unwrap();
+
+        let (open_only, warnings) = list(&store, &ListQuery::default(), now()).unwrap();
+        assert_eq!(open_only.len(), 1);
+        assert_eq!(open_only[0].task.id, t.id);
+        assert_eq!(warnings.len(), 1);
+
+        let done_query = ListQuery {
+            filter: Filter { status: StatusFilter::Done, ..Filter::default() },
+            ..ListQuery::default()
+        };
+        let (done_only, _) = list(&store, &done_query, now()).unwrap();
+        assert_eq!(done_only.len(), 1);
+        assert_eq!(done_only[0].task.title, "Done task");
+    }
+
+    #[test]
+    fn list_on_invalid_project_errors() {
+        let (_dir, store) = wiki();
+        let q = ListQuery { project: Some("ghost".into()), ..ListQuery::default() };
+        assert!(matches!(list(&store, &q, now()), Err(Error::ProjectNotFound(_))));
+    }
+
+    #[test]
+    fn show_returns_resolved_record_and_verbatim_toml() {
+        let (_dir, store) = wiki();
+        let t = add(&store, "proj", new_task("Show me"), now()).unwrap();
+        let (resolved, raw) = show(&store, &by_id(&t.id), None).unwrap();
+        assert_eq!(resolved.record.task.id, t.id);
+        assert_eq!(raw, std::fs::read_to_string(&resolved.record.path).unwrap());
+        assert!(raw.contains("title = \"Show me\""));
     }
 }

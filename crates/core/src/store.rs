@@ -145,6 +145,12 @@ impl Store {
         }
         Ok((records, warnings))
     }
+
+    /// Verbatim file contents (for `show` text output). Kept on Store so
+    /// no other module touches the filesystem.
+    pub fn read_raw(&self, path: &Path) -> Result<String, Error> {
+        Ok(std::fs::read_to_string(path)?)
+    }
 }
 
 #[cfg(test)]
