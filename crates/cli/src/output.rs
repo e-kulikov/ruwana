@@ -2,6 +2,7 @@ use chrono::{DateTime, FixedOffset};
 use ruwana_core::model::{Status, SubTask};
 use ruwana_core::ops::ActionReport;
 use ruwana_core::store::TaskRecord;
+use serde_json::json;
 
 /// One line per task, column-aligned:
 /// `a3bc9f2e  godel/ai-practice  Review Q3 OKRs        due: 2024-03-01`
@@ -50,10 +51,38 @@ pub fn subtasks_text(subs: &[SubTask]) -> String {
         .join("\n")
 }
 
-pub fn list_json(_records: &[TaskRecord]) -> String {
-    "[]".to_string() // Task 13 implements this
+fn record_json(record: &TaskRecord) -> serde_json::Value {
+    json!({
+        "id": record.task.id,
+        "project": record.project,
+        "title": record.task.title,
+        "status": record.task.status.to_string(),
+        "due": record.task.due.map(|d| d.to_rfc3339()),
+        "tags": record.task.tags,
+        "source": record.task.source,
+        "created": record.task.created.to_rfc3339(),
+        "modified": record.task.modified.to_rfc3339(),
+    })
 }
 
-pub fn show_json(_record: &TaskRecord) -> String {
-    "{}".to_string() // Task 13 implements this
+/// JSON array for `list --format json` (spec: list JSON output — no
+/// description/related/sub-tasks; use show for the full record).
+pub fn list_json(records: &[TaskRecord]) -> String {
+    serde_json::Value::Array(records.iter().map(record_json).collect()).to_string()
+}
+
+/// Full single-task object for `show --format json`.
+pub fn show_json(record: &TaskRecord) -> String {
+    let mut value = record_json(record);
+    let obj = value.as_object_mut().expect("record_json is an object");
+    obj.insert("description".into(), json!(record.task.description));
+    obj.insert("related".into(), json!(record.task.related));
+    obj.insert(
+        "tasks".into(),
+        json!(record.task.tasks.iter().map(|s| json!({
+            "id": s.id, "text": s.text, "done": s.done,
+        })).collect::<Vec<_>>()),
+    );
+    obj.insert("file_path".into(), json!(record.path.display().to_string()));
+    value.to_string()
 }
