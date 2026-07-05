@@ -53,7 +53,10 @@ mod tests {
         mk(dir.path(), "godel/ai-practice/.ruwana");
         mk(dir.path(), "godel/other"); // no .ruwana → not a project
         let projects = discover_projects(dir.path());
-        assert_eq!(projects, vec!["books".to_string(), "godel/ai-practice".to_string()]);
+        assert_eq!(
+            projects,
+            vec!["books".to_string(), "godel/ai-practice".to_string()]
+        );
     }
 
     #[test]

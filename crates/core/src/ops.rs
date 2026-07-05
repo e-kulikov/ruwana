@@ -1,10 +1,10 @@
+use crate::Error;
 use crate::discover::discover_projects;
 use crate::ids;
 use crate::model::{Status, SubTask, Task};
 use crate::query::{self, Filter, SortKey};
 use crate::resolve::{self, Resolved, Selector};
 use crate::store::{Store, TaskRecord, Warning};
-use crate::Error;
 use chrono::{DateTime, FixedOffset};
 
 /// Input for `add`. Dates arrive already parsed: callers (CLI, future
@@ -57,7 +57,10 @@ impl EditFields {
 fn validate_title(raw: &str) -> Result<String, Error> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err(Error::InvalidField { field: "title".into(), reason: "must not be empty".into() });
+        return Err(Error::InvalidField {
+            field: "title".into(),
+            reason: "must not be empty".into(),
+        });
     }
     Ok(trimmed.to_string())
 }
@@ -68,7 +71,10 @@ fn validate_values(field: &str, raw: Vec<String>) -> Result<Vec<String>, Error> 
     for value in raw {
         let trimmed = value.trim();
         if trimmed.is_empty() {
-            return Err(Error::InvalidField { field: field.into(), reason: "must not be empty".into() });
+            return Err(Error::InvalidField {
+                field: field.into(),
+                reason: "must not be empty".into(),
+            });
         }
         if !out.iter().any(|v| v == trimmed) {
             out.push(trimmed.to_string());
@@ -96,18 +102,29 @@ fn new_subtask(text: &str, existing: &[SubTask]) -> SubTask {
             break candidate;
         }
     };
-    SubTask { id, text: text.to_string(), done: false }
+    SubTask {
+        id,
+        text: text.to_string(),
+        done: false,
+    }
 }
 
-pub fn add(store: &Store, project: &str, new: NewTask, now: DateTime<FixedOffset>) -> Result<Task, Error> {
+pub fn add(
+    store: &Store,
+    project: &str,
+    new: NewTask,
+    now: DateTime<FixedOffset>,
+) -> Result<Task, Error> {
     store.validate_project(project)?;
     let title = validate_title(&new.title)?;
     let tags = validate_values("tag", new.tags)?;
     let sources = validate_values("source", new.sources)?;
     let mut subtasks: Vec<SubTask> = Vec::new();
     for text in &new.subtasks {
-        let text = validate_title(text)
-            .map_err(|_| Error::InvalidField { field: "task".into(), reason: "must not be empty".into() })?;
+        let text = validate_title(text).map_err(|_| Error::InvalidField {
+            field: "task".into(),
+            reason: "must not be empty".into(),
+        })?;
         subtasks.push(new_subtask(&text, &subtasks));
     }
     let task = Task {
@@ -155,12 +172,22 @@ pub fn set_done(
     // without bumping `modified` or rewriting the file (spec:
     // idempotency — agents retry, retries must not churn the file).
     let already_there = match &resolved.subtask_id {
-        Some(sub_id) => record.task.tasks.iter().find(|s| &s.id == sub_id)
-            .expect("resolve verified the sub-task exists").done == done,
+        Some(sub_id) => {
+            record
+                .task
+                .tasks
+                .iter()
+                .find(|s| &s.id == sub_id)
+                .expect("resolve verified the sub-task exists")
+                .done
+                == done
+        }
         None => (record.task.status == Status::Done) == done,
     };
     if already_there {
-        let untouched = resolved.subtask_id.as_ref()
+        let untouched = resolved
+            .subtask_id
+            .as_ref()
             .and_then(|sub_id| record.task.tasks.iter().find(|s| &s.id == sub_id).cloned());
         return Ok(report(&record, untouched, resolved.warnings));
     }
@@ -168,7 +195,11 @@ pub fn set_done(
         Some(sub_id) => {
             // Sub-task: flip the entry only; parent status untouched
             // (spec: Addressing a Sub-task).
-            let entry = record.task.tasks.iter_mut().find(|s| &s.id == sub_id)
+            let entry = record
+                .task
+                .tasks
+                .iter_mut()
+                .find(|s| &s.id == sub_id)
                 .expect("resolve verified the sub-task exists");
             entry.done = done;
             Some(entry.clone())
@@ -208,10 +239,16 @@ pub fn edit(
                 (!fields.remove_sources.is_empty(), "remove-source"),
             ];
             if let Some((_, flag)) = offending.iter().find(|(set, _)| *set) {
-                return Err(Error::FlagInvalidForSubtask { flag: (*flag).to_string() });
+                return Err(Error::FlagInvalidForSubtask {
+                    flag: (*flag).to_string(),
+                });
             }
             let text = validate_title(fields.title.as_deref().unwrap_or(""))?;
-            let entry = record.task.tasks.iter_mut().find(|s| &s.id == sub_id)
+            let entry = record
+                .task
+                .tasks
+                .iter_mut()
+                .find(|s| &s.id == sub_id)
                 .expect("resolve verified the sub-task exists");
             entry.text = text;
             Some(entry.clone())
@@ -231,13 +268,19 @@ pub fn edit(
                     record.task.tags.push(tag);
                 }
             }
-            record.task.tags.retain(|t| !fields.remove_tags.iter().any(|r| r.trim() == t));
+            record
+                .task
+                .tags
+                .retain(|t| !fields.remove_tags.iter().any(|r| r.trim() == t));
             for source in validate_values("source", fields.add_sources)? {
                 if !record.task.source.contains(&source) {
                     record.task.source.push(source);
                 }
             }
-            record.task.source.retain(|s| !fields.remove_sources.iter().any(|r| r.trim() == s));
+            record
+                .task
+                .source
+                .retain(|s| !fields.remove_sources.iter().any(|r| r.trim() == s));
             None
         }
     };
@@ -248,11 +291,20 @@ pub fn edit(
 
 /// Delete a whole task (file) or one sub-task (entry + modified bump).
 /// Takes an already-resolved target so the CLI can prompt in between.
-pub fn remove(store: &Store, resolved: &Resolved, now: DateTime<FixedOffset>) -> Result<ActionReport, Error> {
+pub fn remove(
+    store: &Store,
+    resolved: &Resolved,
+    now: DateTime<FixedOffset>,
+) -> Result<ActionReport, Error> {
     let mut record = resolved.record.clone();
     match &resolved.subtask_id {
         Some(sub_id) => {
-            let removed = record.task.tasks.iter().find(|s| &s.id == sub_id).cloned()
+            let removed = record
+                .task
+                .tasks
+                .iter()
+                .find(|s| &s.id == sub_id)
+                .cloned()
                 .expect("resolve verified the sub-task exists");
             record.task.tasks.retain(|s| &s.id != sub_id);
             record.task.modified = now;
@@ -298,7 +350,11 @@ pub fn list(
 }
 
 /// Resolve one task and return it with the verbatim TOML file contents.
-pub fn show(store: &Store, selector: &Selector, project: Option<&str>) -> Result<(Resolved, String), Error> {
+pub fn show(
+    store: &Store,
+    selector: &Selector,
+    project: Option<&str>,
+) -> Result<(Resolved, String), Error> {
     let resolved = resolve::resolve(store, selector, project)?;
     let raw = store.read_raw(&resolved.record.path)?;
     Ok((resolved, raw))
@@ -347,7 +403,10 @@ mod tests {
     }
 
     fn by_sub(task: &str, sub: &str) -> Selector {
-        Selector::Id(IdSelector::Compound { task: task.into(), subtask: sub.into() })
+        Selector::Id(IdSelector::Compound {
+            task: task.into(),
+            subtask: sub.into(),
+        })
     }
 
     #[test]
@@ -434,7 +493,16 @@ mod tests {
     #[test]
     fn subtask_done_flips_entry_only_parent_status_untouched() {
         let (_dir, store) = wiki();
-        let t = add(&store, "proj", NewTask { subtasks: vec!["Sub".into()], ..new_task("Parent") }, now()).unwrap();
+        let t = add(
+            &store,
+            "proj",
+            NewTask {
+                subtasks: vec!["Sub".into()],
+                ..new_task("Parent")
+            },
+            now(),
+        )
+        .unwrap();
         let sub_id = t.tasks[0].id.clone();
         let report = set_done(&store, &by_sub(&t.id, &sub_id), None, true, later()).unwrap();
         assert_eq!(report.subtask.as_ref().unwrap().id, sub_id);
@@ -450,7 +518,16 @@ mod tests {
     #[test]
     fn edit_updates_fields_and_manages_tags_sources() {
         let (_dir, store) = wiki();
-        let t = add(&store, "proj", NewTask { tags: vec!["old".into()], ..new_task("Before") }, now()).unwrap();
+        let t = add(
+            &store,
+            "proj",
+            NewTask {
+                tags: vec!["old".into()],
+                ..new_task("Before")
+            },
+            now(),
+        )
+        .unwrap();
         edit(
             &store,
             &by_id(&t.id),
@@ -489,27 +566,48 @@ mod tests {
     #[test]
     fn edit_on_subtask_renames_text_and_rejects_whole_task_flags() {
         let (_dir, store) = wiki();
-        let t = add(&store, "proj", NewTask { subtasks: vec!["Old text".into()], ..new_task("P") }, now()).unwrap();
+        let t = add(
+            &store,
+            "proj",
+            NewTask {
+                subtasks: vec!["Old text".into()],
+                ..new_task("P")
+            },
+            now(),
+        )
+        .unwrap();
         let sub_id = t.tasks[0].id.clone();
         edit(
             &store,
             &by_sub(&t.id, &sub_id),
             None,
-            EditFields { title: Some("New text".into()), ..EditFields::default() },
+            EditFields {
+                title: Some("New text".into()),
+                ..EditFields::default()
+            },
             later(),
         )
         .unwrap();
-        assert_eq!(store.load("proj", &t.id).unwrap().task.tasks[0].text, "New text");
+        assert_eq!(
+            store.load("proj", &t.id).unwrap().task.tasks[0].text,
+            "New text"
+        );
 
         let err = edit(
             &store,
             &by_sub(&t.id, &sub_id),
             None,
-            EditFields { due: Some(dt("2024-04-01T23:59:59+02:00")), ..EditFields::default() },
+            EditFields {
+                due: Some(dt("2024-04-01T23:59:59+02:00")),
+                ..EditFields::default()
+            },
             later(),
         )
         .unwrap_err();
-        assert_eq!(err.to_string(), "--due is not valid when editing a sub-task");
+        assert_eq!(
+            err.to_string(),
+            "--due is not valid when editing a sub-task"
+        );
     }
 
     #[test]
@@ -524,7 +622,16 @@ mod tests {
     #[test]
     fn remove_subtask_keeps_parent_and_bumps_modified() {
         let (_dir, store) = wiki();
-        let t = add(&store, "proj", NewTask { subtasks: vec!["Sub".into()], ..new_task("P") }, now()).unwrap();
+        let t = add(
+            &store,
+            "proj",
+            NewTask {
+                subtasks: vec!["Sub".into()],
+                ..new_task("P")
+            },
+            now(),
+        )
+        .unwrap();
         let sub_id = t.tasks[0].id.clone();
         let resolved = find(&store, &by_sub(&t.id, &sub_id), None).unwrap();
         remove(&store, &resolved, later()).unwrap();
@@ -546,7 +653,10 @@ mod tests {
         assert_eq!(all.len(), 2);
         assert!(warnings.is_empty());
 
-        let scoped_query = ListQuery { project: Some("other".into()), ..ListQuery::default() };
+        let scoped_query = ListQuery {
+            project: Some("other".into()),
+            ..ListQuery::default()
+        };
         let (scoped, _) = list(&store, &scoped_query, now()).unwrap();
         assert_eq!(scoped.len(), 1);
         assert_eq!(scoped[0].task.title, "In other");
@@ -567,7 +677,10 @@ mod tests {
         assert_eq!(warnings.len(), 1);
 
         let done_query = ListQuery {
-            filter: Filter { status: StatusFilter::Done, ..Filter::default() },
+            filter: Filter {
+                status: StatusFilter::Done,
+                ..Filter::default()
+            },
             ..ListQuery::default()
         };
         let (done_only, _) = list(&store, &done_query, now()).unwrap();
@@ -578,8 +691,14 @@ mod tests {
     #[test]
     fn list_on_invalid_project_errors() {
         let (_dir, store) = wiki();
-        let q = ListQuery { project: Some("ghost".into()), ..ListQuery::default() };
-        assert!(matches!(list(&store, &q, now()), Err(Error::ProjectNotFound(_))));
+        let q = ListQuery {
+            project: Some("ghost".into()),
+            ..ListQuery::default()
+        };
+        assert!(matches!(
+            list(&store, &q, now()),
+            Err(Error::ProjectNotFound(_))
+        ));
     }
 
     #[test]

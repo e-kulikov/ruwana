@@ -18,13 +18,13 @@ pub fn parse_explicit(input: &str) -> Option<Result<NaiveDate, Error>> {
     // Only treat it as numeric-explicit if it's digits + separators;
     // "next friday" contains no separator and never reaches here, but
     // guard against inputs like "3/4 done" leaking in.
-    if !input.chars().all(|c| c.is_ascii_digit() || "-./".contains(c)) {
+    if !input
+        .chars()
+        .all(|c| c.is_ascii_digit() || "-./".contains(c))
+    {
         return None;
     }
-    Some(
-        NaiveDate::parse_from_str(input, fmt)
-            .map_err(|_| Error::DateParse(input.to_string())),
-    )
+    Some(NaiveDate::parse_from_str(input, fmt).map_err(|_| Error::DateParse(input.to_string())))
 }
 
 /// Parse any accepted date input to a calendar date. Explicit numeric
@@ -81,17 +81,26 @@ mod tests {
 
     #[test]
     fn iso_dash_is_year_month_day() {
-        assert_eq!(parse_explicit("2024-03-05").unwrap().unwrap(), d(2024, 3, 5));
+        assert_eq!(
+            parse_explicit("2024-03-05").unwrap().unwrap(),
+            d(2024, 3, 5)
+        );
     }
 
     #[test]
     fn dot_is_day_month_year() {
-        assert_eq!(parse_explicit("05.12.2024").unwrap().unwrap(), d(2024, 12, 5));
+        assert_eq!(
+            parse_explicit("05.12.2024").unwrap().unwrap(),
+            d(2024, 12, 5)
+        );
     }
 
     #[test]
     fn slash_is_month_day_year() {
-        assert_eq!(parse_explicit("11/27/2024").unwrap().unwrap(), d(2024, 11, 27));
+        assert_eq!(
+            parse_explicit("11/27/2024").unwrap().unwrap(),
+            d(2024, 11, 27)
+        );
     }
 
     #[test]

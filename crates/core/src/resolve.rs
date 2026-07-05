@@ -1,7 +1,7 @@
+use crate::Error;
 use crate::discover::discover_projects;
 use crate::ids::is_task_id_shaped;
 use crate::store::{Store, TaskRecord, Warning};
-use crate::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdSelector {
@@ -27,7 +27,9 @@ pub struct Resolved {
 }
 
 fn is_subtask_id_shaped(s: &str) -> bool {
-    s.len() == 4 && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+    s.len() == 4
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
 }
 
 /// Validate `--id` syntax: `<task-id>` or `<task-id>:<subtask-id>`.
@@ -35,7 +37,10 @@ pub fn parse_id_selector(input: &str) -> Result<IdSelector, Error> {
     match input.split_once(':') {
         None if is_task_id_shaped(input) => Ok(IdSelector::Task(input.to_string())),
         Some((task, subtask)) if is_task_id_shaped(task) && is_subtask_id_shaped(subtask) => {
-            Ok(IdSelector::Compound { task: task.to_string(), subtask: subtask.to_string() })
+            Ok(IdSelector::Compound {
+                task: task.to_string(),
+                subtask: subtask.to_string(),
+            })
         }
         _ => Err(Error::MalformedIdSelector),
     }
@@ -83,35 +88,59 @@ fn require_subtask(record: &TaskRecord, subtask: &str) -> Result<(), Error> {
     if record.task.tasks.iter().any(|s| s.id == subtask) {
         return Ok(());
     }
-    Err(Error::SubtaskNotFound { subtask: subtask.to_string(), task: record.task.id.clone() })
+    Err(Error::SubtaskNotFound {
+        subtask: subtask.to_string(),
+        task: record.task.id.clone(),
+    })
 }
 
 /// Resolve any command target to a concrete task (and optional sub-task).
-pub fn resolve(store: &Store, selector: &Selector, project: Option<&str>) -> Result<Resolved, Error> {
+pub fn resolve(
+    store: &Store,
+    selector: &Selector,
+    project: Option<&str>,
+) -> Result<Resolved, Error> {
     let projects = candidate_projects(store, project)?;
     match selector {
         Selector::Id(IdSelector::Task(id)) => {
-            let record = find_by_id(store, &projects, id)?.ok_or_else(|| Error::IdNotFound(id.clone()))?;
-            Ok(Resolved { record, subtask_id: None, warnings: Vec::new() })
+            let record =
+                find_by_id(store, &projects, id)?.ok_or_else(|| Error::IdNotFound(id.clone()))?;
+            Ok(Resolved {
+                record,
+                subtask_id: None,
+                warnings: Vec::new(),
+            })
         }
         Selector::Id(IdSelector::Compound { task, subtask }) => {
-            let record =
-                find_by_id(store, &projects, task)?.ok_or_else(|| Error::IdNotFound(task.clone()))?;
+            let record = find_by_id(store, &projects, task)?
+                .ok_or_else(|| Error::IdNotFound(task.clone()))?;
             require_subtask(&record, subtask)?;
-            Ok(Resolved { record, subtask_id: Some(subtask.clone()), warnings: Vec::new() })
+            Ok(Resolved {
+                record,
+                subtask_id: Some(subtask.clone()),
+                warnings: Vec::new(),
+            })
         }
         Selector::IdOrTitle(arg) => {
             #[allow(clippy::collapsible_if)]
             if is_task_id_shaped(arg) {
                 if let Some(record) = find_by_id(store, &projects, arg)? {
-                    return Ok(Resolved { record, subtask_id: None, warnings: Vec::new() });
+                    return Ok(Resolved {
+                        record,
+                        subtask_id: None,
+                        warnings: Vec::new(),
+                    });
                 }
                 // ID-shaped but no such file: fall through to title match.
             }
             let (mut hits, warnings) = find_by_title(store, &projects, arg)?;
             match hits.len() {
                 0 => Err(Error::TitleNotFound(arg.clone())),
-                1 => Ok(Resolved { record: hits.remove(0), subtask_id: None, warnings }),
+                1 => Ok(Resolved {
+                    record: hits.remove(0),
+                    subtask_id: None,
+                    warnings,
+                }),
                 _ => {
                     let candidates = hits
                         .iter()
@@ -150,7 +179,11 @@ mod tests {
     }
 
     fn sub(id: &str, text: &str) -> SubTask {
-        SubTask { id: id.into(), text: text.into(), done: false }
+        SubTask {
+            id: id.into(),
+            text: text.into(),
+            done: false,
+        }
     }
 
     /// Two projects: alpha has "abc1de2f" (title "Unique title", one
@@ -161,24 +194,47 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("alpha")).unwrap();
         std::fs::create_dir_all(dir.path().join("beta")).unwrap();
         let store = Store::new(dir.path().to_path_buf());
-        store.save("alpha", &task("abc1de2f", "Unique title", vec![sub("gh7f", "Sub one")])).unwrap();
-        store.save("alpha", &task("dupdupd1", "Same title", vec![])).unwrap();
-        store.save("beta", &task("dupdupd2", "Same title", vec![])).unwrap();
+        store
+            .save(
+                "alpha",
+                &task("abc1de2f", "Unique title", vec![sub("gh7f", "Sub one")]),
+            )
+            .unwrap();
+        store
+            .save("alpha", &task("dupdupd1", "Same title", vec![]))
+            .unwrap();
+        store
+            .save("beta", &task("dupdupd2", "Same title", vec![]))
+            .unwrap();
         (dir, store)
     }
 
     #[test]
     fn parse_id_selector_accepts_plain_and_compound() {
-        assert_eq!(parse_id_selector("abc1de2f").unwrap(), IdSelector::Task("abc1de2f".into()));
+        assert_eq!(
+            parse_id_selector("abc1de2f").unwrap(),
+            IdSelector::Task("abc1de2f".into())
+        );
         assert_eq!(
             parse_id_selector("abc1de2f:gh7f").unwrap(),
-            IdSelector::Compound { task: "abc1de2f".into(), subtask: "gh7f".into() }
+            IdSelector::Compound {
+                task: "abc1de2f".into(),
+                subtask: "gh7f".into()
+            }
         );
     }
 
     #[test]
     fn parse_id_selector_rejects_malformed() {
-        for bad in ["short", "abc1de2f:", ":gh7f", "abc1de2f:toolong7", "abc1de2f:GH7F", "a:b:c", "ABC1DE2F"] {
+        for bad in [
+            "short",
+            "abc1de2f:",
+            ":gh7f",
+            "abc1de2f:toolong7",
+            "abc1de2f:GH7F",
+            "a:b:c",
+            "ABC1DE2F",
+        ] {
             assert!(
                 matches!(parse_id_selector(bad), Err(Error::MalformedIdSelector)),
                 "should reject {bad:?}"
@@ -197,7 +253,12 @@ mod tests {
     #[test]
     fn resolves_id_scoped_to_project() {
         let (_dir, store) = wiki();
-        let hit = resolve(&store, &Selector::IdOrTitle("abc1de2f".into()), Some("alpha")).unwrap();
+        let hit = resolve(
+            &store,
+            &Selector::IdOrTitle("abc1de2f".into()),
+            Some("alpha"),
+        )
+        .unwrap();
         assert_eq!(hit.record.task.title, "Unique title");
     }
 
@@ -234,14 +295,22 @@ mod tests {
             }
             other => panic!("expected AmbiguousTitle, got {other:?}"),
         }
-        let hit = resolve(&store, &Selector::IdOrTitle("Same title".into()), Some("beta")).unwrap();
+        let hit = resolve(
+            &store,
+            &Selector::IdOrTitle("Same title".into()),
+            Some("beta"),
+        )
+        .unwrap();
         assert_eq!(hit.record.task.id, "dupdupd2");
     }
 
     #[test]
     fn compound_id_resolves_subtask() {
         let (_dir, store) = wiki();
-        let sel = Selector::Id(IdSelector::Compound { task: "abc1de2f".into(), subtask: "gh7f".into() });
+        let sel = Selector::Id(IdSelector::Compound {
+            task: "abc1de2f".into(),
+            subtask: "gh7f".into(),
+        });
         let hit = resolve(&store, &sel, None).unwrap();
         assert_eq!(hit.subtask_id.as_deref(), Some("gh7f"));
     }
@@ -249,15 +318,23 @@ mod tests {
     #[test]
     fn compound_id_with_unknown_subtask_errors() {
         let (_dir, store) = wiki();
-        let sel = Selector::Id(IdSelector::Compound { task: "abc1de2f".into(), subtask: "zzzz".into() });
+        let sel = Selector::Id(IdSelector::Compound {
+            task: "abc1de2f".into(),
+            subtask: "zzzz".into(),
+        });
         let err = resolve(&store, &sel, None).unwrap_err();
-        assert_eq!(err.to_string(), "no sub-task found with id: zzzz in task abc1de2f");
+        assert_eq!(
+            err.to_string(),
+            "no sub-task found with id: zzzz in task abc1de2f"
+        );
     }
 
     #[test]
     fn explicit_id_selector_never_falls_back_to_title() {
         let (_dir, store) = wiki();
         let sel = Selector::Id(IdSelector::Task("zzzzzzzz".into()));
-        assert!(matches!(resolve(&store, &sel, None), Err(Error::IdNotFound(id)) if id == "zzzzzzzz"));
+        assert!(
+            matches!(resolve(&store, &sel, None), Err(Error::IdNotFound(id)) if id == "zzzzzzzz")
+        );
     }
 }

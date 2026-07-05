@@ -1,5 +1,5 @@
-use crate::model::{self, Task};
 use crate::Error;
+use crate::model::{self, Task};
 use rayon::prelude::*;
 use std::path::{Component, Path, PathBuf};
 
@@ -193,9 +193,17 @@ mod tests {
     #[test]
     fn validate_project_rejects_missing_absolute_and_dotdot() {
         let (_dir, store) = wiki();
-        assert!(matches!(store.validate_project("nope"), Err(Error::ProjectNotFound(p)) if p == "nope"));
-        assert!(matches!(store.validate_project("/etc"), Err(Error::InvalidProjectPath)));
-        assert!(matches!(store.validate_project("proj/../proj/sub"), Err(Error::InvalidProjectPath)));
+        assert!(
+            matches!(store.validate_project("nope"), Err(Error::ProjectNotFound(p)) if p == "nope")
+        );
+        assert!(matches!(
+            store.validate_project("/etc"),
+            Err(Error::InvalidProjectPath)
+        ));
+        assert!(matches!(
+            store.validate_project("proj/../proj/sub"),
+            Err(Error::InvalidProjectPath)
+        ));
     }
 
     #[test]
@@ -227,7 +235,9 @@ mod tests {
         assert!(!store.task_exists("proj/sub", "abc1de2f"));
         store.save("proj/sub", &task("abc1de2f", "Hello")).unwrap();
         assert!(store.task_exists("proj/sub", "abc1de2f"));
-        assert!(matches!(store.load("proj/sub", "zzzzzzzz"), Err(Error::IdNotFound(id)) if id == "zzzzzzzz"));
+        assert!(
+            matches!(store.load("proj/sub", "zzzzzzzz"), Err(Error::IdNotFound(id)) if id == "zzzzzzzz")
+        );
     }
 
     #[test]
@@ -241,9 +251,17 @@ mod tests {
     #[test]
     fn load_project_skips_unparseable_files_with_warning() {
         let (dir, store) = wiki();
-        store.save("proj/sub", &task("abc1de2f", "Good one")).unwrap();
-        store.save("proj/sub", &task("bcd2ef3a", "Also good")).unwrap();
-        std::fs::write(dir.path().join("proj/sub/.ruwana/broken12.toml"), "not = valid = toml").unwrap();
+        store
+            .save("proj/sub", &task("abc1de2f", "Good one"))
+            .unwrap();
+        store
+            .save("proj/sub", &task("bcd2ef3a", "Also good"))
+            .unwrap();
+        std::fs::write(
+            dir.path().join("proj/sub/.ruwana/broken12.toml"),
+            "not = valid = toml",
+        )
+        .unwrap();
         let (records, warnings) = store.load_project("proj/sub").unwrap();
         assert_eq!(records.len(), 2);
         assert_eq!(warnings.len(), 1);
@@ -263,7 +281,9 @@ mod tests {
     #[test]
     fn load_project_ignores_non_toml_files() {
         let (dir, store) = wiki();
-        store.save("proj/sub", &task("abc1de2f", "Good one")).unwrap();
+        store
+            .save("proj/sub", &task("abc1de2f", "Good one"))
+            .unwrap();
         std::fs::write(dir.path().join("proj/sub/.ruwana/notes.txt"), "hi").unwrap();
         let (records, warnings) = store.load_project("proj/sub").unwrap();
         assert_eq!(records.len(), 1);

@@ -5,9 +5,9 @@ use args::{Cli, Command, FormatArg, ListArgs, SortArg, TargetArgs};
 use chrono::{DateTime, FixedOffset, Local};
 use clap::Parser;
 use ruwana_core::query::{Filter, SortKey, StatusFilter};
-use ruwana_core::resolve::{parse_id_selector, Selector};
+use ruwana_core::resolve::{Selector, parse_id_selector};
 use ruwana_core::store::{Store, Warning};
-use ruwana_core::{dates, ops, Error};
+use ruwana_core::{Error, dates, ops};
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -50,12 +50,14 @@ fn main() -> ExitCode {
 
 /// WIKI_ROOT env var, defaulting to ~/wiki (spec: Storage Layout).
 fn wiki_root() -> PathBuf {
-    std::env::var_os("WIKI_ROOT").map(PathBuf::from).unwrap_or_else(|| {
-        std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("wiki")
-    })
+    std::env::var_os("WIKI_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("wiki")
+        })
 }
 
 fn print_warnings(warnings: &[Warning]) {
@@ -68,9 +70,9 @@ fn print_warnings(warnings: &[Warning]) {
 /// mutual-exclusion rule with its exact message.
 fn selector(target: &TargetArgs) -> Result<Selector, CliError> {
     match (&target.id_or_title, &target.id) {
-        (Some(_), Some(_)) => {
-            Err(CliError::Plain("--id and a positional id/title are mutually exclusive".into()))
-        }
+        (Some(_), Some(_)) => Err(CliError::Plain(
+            "--id and a positional id/title are mutually exclusive".into(),
+        )),
         (Some(arg), None) => Ok(Selector::IdOrTitle(arg.clone())),
         (None, Some(id)) => Ok(Selector::Id(parse_id_selector(id)?)),
         (None, None) => Err(CliError::Plain("expected a task id/title or --id".into())),
@@ -97,11 +99,31 @@ fn build_filter(args: &ListArgs, now: DateTime<FixedOffset>) -> Result<Filter, C
         status,
         tags: args.tags.clone(),
         sources: args.sources.clone(),
-        due_on: args.due.as_deref().map(|d| dates::parse_date(d, now)).transpose()?,
-        created_before: args.created_before.as_deref().map(|d| parse_instant(d, now)).transpose()?,
-        created_after: args.created_after.as_deref().map(|d| parse_instant(d, now)).transpose()?,
-        modified_before: args.modified_before.as_deref().map(|d| parse_instant(d, now)).transpose()?,
-        modified_after: args.modified_after.as_deref().map(|d| parse_instant(d, now)).transpose()?,
+        due_on: args
+            .due
+            .as_deref()
+            .map(|d| dates::parse_date(d, now))
+            .transpose()?,
+        created_before: args
+            .created_before
+            .as_deref()
+            .map(|d| parse_instant(d, now))
+            .transpose()?,
+        created_after: args
+            .created_after
+            .as_deref()
+            .map(|d| parse_instant(d, now))
+            .transpose()?,
+        modified_before: args
+            .modified_before
+            .as_deref()
+            .map(|d| parse_instant(d, now))
+            .transpose()?,
+        modified_after: args
+            .modified_after
+            .as_deref()
+            .map(|d| parse_instant(d, now))
+            .transpose()?,
     })
 }
 
@@ -138,7 +160,11 @@ fn run(command: Command, store: &Store, now: DateTime<FixedOffset>) -> Result<()
             let new = ops::NewTask {
                 title: a.title,
                 description: a.description,
-                due: a.due.as_deref().map(|d| parse_instant(d, now)).transpose()?,
+                due: a
+                    .due
+                    .as_deref()
+                    .map(|d| parse_instant(d, now))
+                    .transpose()?,
                 tags: a.tags,
                 sources: a.sources,
                 subtasks: a.subtasks,
@@ -175,7 +201,8 @@ fn run(command: Command, store: &Store, now: DateTime<FixedOffset>) -> Result<()
             }
         }
         Command::Show(a) => {
-            let (resolved, raw) = ops::show(store, &selector(&a.target)?, a.target.project.as_deref())?;
+            let (resolved, raw) =
+                ops::show(store, &selector(&a.target)?, a.target.project.as_deref())?;
             print_warnings(&resolved.warnings);
             match a.format {
                 FormatArg::Text => print!("{raw}"),
@@ -194,20 +221,33 @@ fn run(command: Command, store: &Store, now: DateTime<FixedOffset>) -> Result<()
             let fields = ops::EditFields {
                 title: a.title,
                 description: a.description,
-                due: a.due.as_deref().map(|d| parse_instant(d, now)).transpose()?,
+                due: a
+                    .due
+                    .as_deref()
+                    .map(|d| parse_instant(d, now))
+                    .transpose()?,
                 add_tags: a.add_tags,
                 remove_tags: a.remove_tags,
                 add_sources: a.add_sources,
                 remove_sources: a.remove_sources,
             };
-            let report = ops::edit(store, &selector(&a.target)?, a.target.project.as_deref(), fields, now)?;
+            let report = ops::edit(
+                store,
+                &selector(&a.target)?,
+                a.target.project.as_deref(),
+                fields,
+                now,
+            )?;
             print_warnings(&report.warnings);
             println!("{}", output::action_line("edited", &report));
         }
         Command::Rm(a) => {
             let resolved = ops::find(store, &selector(&a.target)?, a.target.project.as_deref())?;
             print_warnings(&resolved.warnings);
-            let (id, title) = (resolved.record.task.id.clone(), resolved.record.task.title.clone());
+            let (id, title) = (
+                resolved.record.task.id.clone(),
+                resolved.record.task.title.clone(),
+            );
             if confirm_rm(&id, &title, a.force)? {
                 let report = ops::remove(store, &resolved, now)?;
                 println!("{}", output::action_line("removed", &report));

@@ -77,7 +77,11 @@ mod tests {
             modified: dt("2024-01-20T14:05:47+01:00"),
             related: vec!["https://example.com".into()],
             description: Some("A description.\nSecond line.".into()),
-            tasks: vec![SubTask { id: "gh7f".into(), text: "Sub one".into(), done: false }],
+            tasks: vec![SubTask {
+                id: "gh7f".into(),
+                text: "Sub one".into(),
+                done: false,
+            }],
         }
     }
 
@@ -94,7 +98,11 @@ mod tests {
     #[test]
     fn canonical_field_order_and_rfc3339() {
         let toml_str = to_toml(&sample_task()).unwrap();
-        let pos = |needle: &str| toml_str.find(needle).unwrap_or_else(|| panic!("missing {needle}"));
+        let pos = |needle: &str| {
+            toml_str
+                .find(needle)
+                .unwrap_or_else(|| panic!("missing {needle}"))
+        };
         assert!(pos("id =") < pos("title ="));
         assert!(pos("title =") < pos("status ="));
         assert!(pos("status =") < pos("due ="));
@@ -125,8 +133,18 @@ mod tests {
             tasks: vec![],
         };
         let toml_str = to_toml(&task).unwrap();
-        for absent in ["due", "tags", "source", "related", "description", "[[tasks]]"] {
-            assert!(!toml_str.contains(absent), "should omit {absent}:\n{toml_str}");
+        for absent in [
+            "due",
+            "tags",
+            "source",
+            "related",
+            "description",
+            "[[tasks]]",
+        ] {
+            assert!(
+                !toml_str.contains(absent),
+                "should omit {absent}:\n{toml_str}"
+            );
         }
         let parsed = from_toml(&toml_str).unwrap();
         assert_eq!(task, parsed);
@@ -134,7 +152,9 @@ mod tests {
 
     #[test]
     fn unknown_status_is_a_parse_error() {
-        let bad = to_toml(&sample_task()).unwrap().replace("\"open\"", "\"pending\"");
+        let bad = to_toml(&sample_task())
+            .unwrap()
+            .replace("\"open\"", "\"pending\"");
         assert!(from_toml(&bad).is_err());
     }
 
@@ -142,8 +162,11 @@ mod tests {
     fn missing_required_field_is_a_parse_error() {
         // Drop the `title` line entirely.
         let toml_str = to_toml(&sample_task()).unwrap();
-        let without_title: String =
-            toml_str.lines().filter(|l| !l.starts_with("title ")).collect::<Vec<_>>().join("\n");
+        let without_title: String = toml_str
+            .lines()
+            .filter(|l| !l.starts_with("title "))
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(from_toml(&without_title).is_err());
     }
 }
