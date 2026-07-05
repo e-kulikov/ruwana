@@ -36,10 +36,16 @@ pub enum SortKey {
     Title,
 }
 
-/// Calendar date of `instant` as seen from `now`'s timezone offset —
-/// the spec's "today where I'm asking from" rule.
-fn local_date(instant: DateTime<FixedOffset>, now: DateTime<FixedOffset>) -> NaiveDate {
-    instant.with_timezone(now.offset()).date_naive()
+/// Calendar date of `instant`, in its own stored offset. `due` instants are
+/// always produced by `end_of_day(date, &Local)`, which resolves DST
+/// correctly *for that date* — so `instant`'s own offset already is the
+/// querying machine's local timezone on that day (spec: "today where I'm
+/// asking from" rule). Re-projecting through a *different* instant's
+/// offset (e.g. "now"'s, when "now" and `instant` straddle a DST boundary)
+/// silently shifts the calendar date — that was a real bug here; don't
+/// reintroduce it.
+fn local_date(instant: DateTime<FixedOffset>) -> NaiveDate {
+    instant.date_naive()
 }
 
 fn matches_status(record: &TaskRecord, status: StatusFilter, now: DateTime<FixedOffset>) -> bool {
@@ -56,7 +62,7 @@ fn matches_status(record: &TaskRecord, status: StatusFilter, now: DateTime<Fixed
             let tomorrow = today + Days::new(1);
             task.status == Status::Open
                 && task.due.is_some_and(|d| {
-                    let date = local_date(d, now);
+                    let date = local_date(d);
                     date == today || date == tomorrow
                 })
         }
@@ -68,7 +74,9 @@ fn matches(record: &TaskRecord, filter: &Filter, now: DateTime<FixedOffset>) -> 
     matches_status(record, filter.status, now)
         && filter.tags.iter().all(|t| task.tags.contains(t))
         && (filter.sources.is_empty() || filter.sources.iter().any(|s| task.source.contains(s)))
-        && filter.due_on.is_none_or(|d| task.due.is_some_and(|due| local_date(due, now) == d))
+        && filter
+            .due_on
+            .is_none_or(|d| task.due.is_some_and(|due| local_date(due) == d))
         && filter.created_before.is_none_or(|b| task.created < b)
         && filter.created_after.is_none_or(|a| task.created > a)
         && filter.modified_before.is_none_or(|b| task.modified < b)
@@ -82,8 +90,10 @@ pub fn apply(
     sort: SortKey,
     now: DateTime<FixedOffset>,
 ) -> Vec<TaskRecord> {
-    let mut out: Vec<TaskRecord> =
-        records.into_iter().filter(|r| matches(r, filter, now)).collect();
+    let mut out: Vec<TaskRecord> = records
+        .into_iter()
+        .filter(|r| matches(r, filter, now))
+        .collect();
     match sort {
         // Due ascending, no-due last, created-ascending tiebreak (spec default).
         SortKey::Due => out.sort_by_key(|r| (r.task.due.is_none(), r.task.due, r.task.created)),
@@ -110,7 +120,13 @@ mod tests {
         dt("2024-03-13T10:00:00+01:00")
     }
 
-    fn rec(id: &str, status: Status, due: Option<&str>, tags: &[&str], source: &[&str]) -> TaskRecord {
+    fn rec(
+        id: &str,
+        status: Status,
+        due: Option<&str>,
+        tags: &[&str],
+        source: &[&str],
+    ) -> TaskRecord {
         TaskRecord {
             task: Task {
                 id: id.into(),
@@ -137,17 +153,47 @@ mod tests {
     fn fixture() -> Vec<TaskRecord> {
         vec![
             // open, overdue (due yesterday)
-            rec("overdue1", Status::Open, Some("2024-03-12T23:59:59+01:00"), &["okr"], &["meet-a"]),
+            rec(
+                "overdue1",
+                Status::Open,
+                Some("2024-03-12T23:59:59+01:00"),
+                &["okr"],
+                &["meet-a"],
+            ),
             // open, due today → urgent, NOT overdue
-            rec("duetoday", Status::Open, Some("2024-03-13T23:59:59+01:00"), &["okr", "review"], &[]),
+            rec(
+                "duetoday",
+                Status::Open,
+                Some("2024-03-13T23:59:59+01:00"),
+                &["okr", "review"],
+                &[],
+            ),
             // open, due tomorrow → urgent
-            rec("duetomor", Status::Open, Some("2024-03-14T23:59:59+01:00"), &[], &["meet-b"]),
+            rec(
+                "duetomor",
+                Status::Open,
+                Some("2024-03-14T23:59:59+01:00"),
+                &[],
+                &["meet-b"],
+            ),
             // open, due far future
-            rec("farfutur", Status::Open, Some("2024-06-01T23:59:59+02:00"), &["review"], &[]),
+            rec(
+                "farfutur",
+                Status::Open,
+                Some("2024-06-01T23:59:59+02:00"),
+                &["review"],
+                &[],
+            ),
             // open, no due date
             rec("nodueyet", Status::Open, None, &["okr"], &["meet-a"]),
             // done
-            rec("done0001", Status::Done, Some("2024-03-01T23:59:59+01:00"), &["okr"], &[]),
+            rec(
+                "done0001",
+                Status::Done,
+                Some("2024-03-01T23:59:59+01:00"),
+                &["okr"],
+                &[],
+            ),
         ]
     }
 
@@ -160,36 +206,69 @@ mod tests {
 
     #[test]
     fn status_done_and_all() {
-        let done = Filter { status: StatusFilter::Done, ..Filter::default() };
-        assert_eq!(ids(&apply(fixture(), &done, SortKey::Title, now())), vec!["done0001"]);
-        let all = Filter { status: StatusFilter::All, ..Filter::default() };
+        let done = Filter {
+            status: StatusFilter::Done,
+            ..Filter::default()
+        };
+        assert_eq!(
+            ids(&apply(fixture(), &done, SortKey::Title, now())),
+            vec!["done0001"]
+        );
+        let all = Filter {
+            status: StatusFilter::All,
+            ..Filter::default()
+        };
         assert_eq!(apply(fixture(), &all, SortKey::Title, now()).len(), 6);
     }
 
     #[test]
     fn overdue_excludes_due_today() {
-        let f = Filter { status: StatusFilter::Overdue, ..Filter::default() };
-        assert_eq!(ids(&apply(fixture(), &f, SortKey::Title, now())), vec!["overdue1"]);
+        let f = Filter {
+            status: StatusFilter::Overdue,
+            ..Filter::default()
+        };
+        assert_eq!(
+            ids(&apply(fixture(), &f, SortKey::Title, now())),
+            vec!["overdue1"]
+        );
     }
 
     #[test]
     fn urgent_is_today_or_tomorrow_open_only() {
-        let f = Filter { status: StatusFilter::Urgent, ..Filter::default() };
-        assert_eq!(ids(&apply(fixture(), &f, SortKey::Title, now())), vec!["duetoday", "duetomor"]);
+        let f = Filter {
+            status: StatusFilter::Urgent,
+            ..Filter::default()
+        };
+        assert_eq!(
+            ids(&apply(fixture(), &f, SortKey::Title, now())),
+            vec!["duetoday", "duetomor"]
+        );
     }
 
     #[test]
     fn tag_filter_is_and_with_exact_elements() {
-        let f = Filter { tags: vec!["okr".into(), "review".into()], ..Filter::default() };
-        assert_eq!(ids(&apply(fixture(), &f, SortKey::Title, now())), vec!["duetoday"]);
+        let f = Filter {
+            tags: vec!["okr".into(), "review".into()],
+            ..Filter::default()
+        };
+        assert_eq!(
+            ids(&apply(fixture(), &f, SortKey::Title, now())),
+            vec!["duetoday"]
+        );
         // exact element: "ok" must not match "okr"
-        let f2 = Filter { tags: vec!["ok".into()], ..Filter::default() };
+        let f2 = Filter {
+            tags: vec!["ok".into()],
+            ..Filter::default()
+        };
         assert!(apply(fixture(), &f2, SortKey::Title, now()).is_empty());
     }
 
     #[test]
     fn source_filter_is_or() {
-        let f = Filter { sources: vec!["meet-a".into(), "meet-b".into()], ..Filter::default() };
+        let f = Filter {
+            sources: vec!["meet-a".into(), "meet-b".into()],
+            ..Filter::default()
+        };
         assert_eq!(
             ids(&apply(fixture(), &f, SortKey::Title, now())),
             vec!["duetomor", "nodueyet", "overdue1"]
@@ -203,7 +282,10 @@ mod tests {
             status: StatusFilter::All,
             ..Filter::default()
         };
-        assert_eq!(ids(&apply(fixture(), &f, SortKey::Title, now())), vec!["duetoday"]);
+        assert_eq!(
+            ids(&apply(fixture(), &f, SortKey::Title, now())),
+            vec!["duetoday"]
+        );
     }
 
     #[test]
@@ -229,7 +311,10 @@ mod tests {
     #[test]
     fn default_sort_due_ascending_no_due_last() {
         let out = apply(fixture(), &Filter::default(), SortKey::Due, now());
-        assert_eq!(ids(&out), vec!["overdue1", "duetoday", "duetomor", "farfutur", "nodueyet"]);
+        assert_eq!(
+            ids(&out),
+            vec!["overdue1", "duetoday", "duetomor", "farfutur", "nodueyet"]
+        );
     }
 
     #[test]

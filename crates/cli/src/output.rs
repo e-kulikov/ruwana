@@ -6,18 +6,31 @@ use serde_json::json;
 
 /// One line per task, column-aligned:
 /// `a3bc9f2e  godel/ai-practice  Review Q3 OKRs        due: 2024-03-01`
-/// Due column: `due: YYYY-MM-DD` (calendar date in the querying tz),
+/// Due column: `due: YYYY-MM-DD` (calendar date, querying timezone),
 /// `overdue` for past-due open tasks, empty when no due date.
+///
+/// `due` is rendered from its own stored offset, not reprojected through
+/// `now`'s: `due` is always `end_of_day(date, &Local)`, which already
+/// resolves DST correctly for its own date, so its offset *is* the
+/// querying machine's local timezone on that day. Reprojecting through
+/// `now.offset()` shifts the calendar date whenever `due` and `now`
+/// straddle a DST boundary (e.g. a winter due date queried in summer) —
+/// that was a real bug here; don't reintroduce it.
 pub fn list_text(records: &[TaskRecord], now: DateTime<FixedOffset>) -> String {
     let rows: Vec<(String, String, String, String)> = records
         .iter()
         .map(|r| {
             let due_col = match r.task.due {
                 Some(due) if r.task.status == Status::Open && due < now => "overdue".to_string(),
-                Some(due) => format!("due: {}", due.with_timezone(now.offset()).format("%Y-%m-%d")),
+                Some(due) => format!("due: {}", due.format("%Y-%m-%d")),
                 None => String::new(),
             };
-            (r.task.id.clone(), r.project.clone(), r.task.title.clone(), due_col)
+            (
+                r.task.id.clone(),
+                r.project.clone(),
+                r.task.title.clone(),
+                due_col,
+            )
         })
         .collect();
     let id_width = rows.iter().map(|r| r.0.len()).max().unwrap_or(0);
@@ -79,9 +92,16 @@ pub fn show_json(record: &TaskRecord) -> String {
     obj.insert("related".into(), json!(record.task.related));
     obj.insert(
         "tasks".into(),
-        json!(record.task.tasks.iter().map(|s| json!({
-            "id": s.id, "text": s.text, "done": s.done,
-        })).collect::<Vec<_>>()),
+        json!(
+            record
+                .task
+                .tasks
+                .iter()
+                .map(|s| json!({
+                    "id": s.id, "text": s.text, "done": s.done,
+                }))
+                .collect::<Vec<_>>()
+        ),
     );
     obj.insert("file_path".into(), json!(record.path.display().to_string()));
     value.to_string()
