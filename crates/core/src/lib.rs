@@ -2,12 +2,10 @@ pub mod dates;
 pub mod discover;
 pub mod ids;
 pub mod model;
+pub mod ops;
 pub mod query;
 pub mod resolve;
 pub mod store;
-
-// Modules added by later tasks (uncomment as they land):
-// pub mod ops;
 
 /// Crate-wide error type. Display strings are the CLI's user-facing
 /// messages, verbatim from the spec's Error Handling table — the CLI
