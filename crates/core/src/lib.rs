@@ -1,10 +1,10 @@
 pub mod dates;
+pub mod discover;
 pub mod ids;
 pub mod model;
 pub mod store;
 
 // Modules added by later tasks (uncomment as they land):
-// pub mod discover;
 // pub mod query;
 // pub mod resolve;
 // pub mod ops;
