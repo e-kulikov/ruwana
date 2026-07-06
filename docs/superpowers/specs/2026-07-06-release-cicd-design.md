@@ -28,16 +28,21 @@ version numbers or release notes anywhere.
   for merge.
 - Version numbers derived from conventional-commit history, never edited
   by hand.
-- Prebuilt Linux binaries downloadable from GitHub Releases; installable
-  via `cargo install --git` as the fallback.
+- Prebuilt binaries for every platform the author uses — Windows 11
+  x86_64, macOS (Apple Silicon and Intel), and Linux/WSL x86_64 —
+  downloadable from GitHub Releases; installable via
+  `cargo install --git` as the fallback.
 - The released binary's `--version` provably matches the released tag.
 
 **Non-Goals (this iteration):**
 
 - Publishing to crates.io (both crates stay `publish = false`; see
   Decision Log — revisit when the tool has external users).
-- macOS/Windows/ARM targets, code signing, notarization (single-user
-  Linux/WSL tool today; targets are config lines away when needed).
+- Code signing and macOS notarization (unsigned binaries are fine for
+  personal use; Gatekeeper/SmartScreen warnings are acceptable —
+  revisit if the tool gains outside users).
+- ARM Linux and ARM Windows targets (nothing the author runs; config
+  lines away when needed).
 - Dependency-audit automation (`cargo-deny`), artifact attestations —
   deferred to P1, not because they're hard but to keep the first
   iteration minimal.
@@ -148,15 +153,33 @@ Trigger: push of tag `v**`.
 
 Config (`dist-workspace.toml`):
 
-- `targets = ["x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl"]`
-  — glibc for normal use, musl as the static fallback that runs
-  anywhere (incl. minimal containers).
-- `installers = ["shell"]` — generates the `curl | sh` installer
-  published with each release.
+- Targets — one per platform the author actually runs, plus the static
+  Linux fallback:
+
+  | Target | Covers |
+  | ------ | ------ |
+  | `x86_64-unknown-linux-gnu` | the author's WSL2 (primary) |
+  | `x86_64-unknown-linux-musl` | static fallback: containers, minimal hosts |
+  | `x86_64-pc-windows-msvc` | the author's Windows 11 host (NT 10.0.26200, AMD64) |
+  | `aarch64-apple-darwin` | macOS on Apple Silicon |
+  | `x86_64-apple-darwin` | macOS on Intel |
+
+  cargo-dist builds each on its native GitHub runner (ubuntu / windows /
+  macos images) — no cross-compilation fragility.
+- `installers = ["shell", "powershell"]` — `curl | sh` for Linux/macOS,
+  `irm | iex` for Windows, both published with each release.
 - `ci = "github"`, `install-path = "CARGO_HOME"`.
-- Artifacts: per-target tarballs + `sha256` checksums + installer
-  script, attached to the GitHub Release for the tag; release body =
-  the changelog section for that version.
+- Artifacts: per-target archives (tarballs; `.zip` for Windows, dist's
+  default) + `sha256` checksums + both installer scripts, attached to
+  the GitHub Release for the tag; release body = the changelog section
+  for that version.
+
+Platform caveat: unit/e2e tests keep running on Ubuntu only (ci.yml).
+The code is platform-portable by construction (no unix-only APIs;
+`discover.rs` already normalizes `\` → `/`), and the release builds
+themselves will surface compile-level platform breakage. A full 3-OS
+test matrix is deliberately P1, not P0 — it triples CI minutes for a
+risk the release build already half-covers.
 
 Only `ruwana-cli` (binary `ruwana`) is distributed; `ruwana-core` ships
 inside it.
@@ -262,8 +285,9 @@ documented as "don't, unless the artifact is actively harmful."
       least-privilege permissions)
 - [ ] `release-plz.yml` + `release-plz.toml` (release PR + tags;
       `RELEASE_PLZ_TOKEN` documented)
-- [ ] cargo-dist init: `dist-workspace.toml` (2 Linux targets, shell
-      installer) + generated `release.yml`
+- [ ] cargo-dist init: `dist-workspace.toml` (5 targets: Linux gnu+musl,
+      Windows x86_64 MSVC, macOS arm64+x86_64; shell + powershell
+      installers) + generated `release.yml`
 - [ ] `rust-version = "1.85"` in `[workspace.package]`
 - [ ] Version-consistency e2e test
 - [ ] README additions: install instructions (release artifacts,
@@ -278,6 +302,9 @@ documented as "don't, unless the artifact is actively harmful."
       on `Cargo.lock` changes
 - [ ] GitHub artifact attestations (build provenance) on release
       artifacts
+- [ ] 3-OS CI test matrix (ubuntu/windows/macos) for the `check` job —
+      release builds compile on all five targets from day one, but
+      tests only run on Linux until this lands
 - [ ] `aarch64-unknown-linux-gnu` target (ARM servers/containers)
 
 ### Out of scope until there's demand
@@ -296,7 +323,8 @@ documented as "don't, unless the artifact is actively harmful."
 | 2 | release-plz over semantic-release/release-please | Rust/workspace-native: understands Cargo.toml, Cargo.lock, crate dependency order; JS tools need adapters |
 | 3 | cargo-dist (astral-sh fork) for binaries | Hand-rolled matrix + `taiki-e/upload-rust-binary-action` (fine fallback, chosen against because dist is declarative, generates checksums/installers/release bodies, and regeneration prevents YAML rot); the fork choice is forced — upstream axodotdev is discontinued |
 | 4 | No crates.io in this iteration | Publishing commits to a public name/semver contract a personal tool doesn't need; `cargo install --git` + binaries cover all current consumers |
-| 5 | Linux gnu+musl only | The tool runs on the author's WSL2; musl covers containers/minimal hosts; other targets are one config line when demanded |
+| 5 | Five targets: Linux gnu+musl, Windows x86_64 MSVC, macOS arm64 + x86_64 | Covers every machine the author uses (WSL2 primary, Windows 11 AMD64 host, both macOS architectures) plus the static-musl fallback; native runners per OS avoid cross-compilation fragility; ARM Linux/Windows deferred (nothing runs there) |
+| 5a | Tests stay Ubuntu-only in P0; 3-OS test matrix is P1 | Release builds already compile all five targets (catching compile-level platform breakage); a full matrix triples CI minutes — added once, cheaply, in P1 |
 | 6 | Split ownership: release-plz owns tags/changelog, cargo-dist owns the GitHub Release | Letting both create Releases double-posts; letting dist own everything loses the release-PR gate |
 | 7 | PAT (`RELEASE_PLZ_TOKEN`) over default token | Default-token PRs don't trigger CI → unmergeable release PRs under branch protection; a GitHub App is over-engineering for solo use |
 | 8 | Actions pinned by major tag, not SHA | Solo project threat model; SHA-pinning without update automation (dependabot) rots |
