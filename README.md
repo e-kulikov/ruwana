@@ -7,7 +7,22 @@ the single source of truth. Full specification:
 
 ## Install
 
-    cargo install --path crates/cli
+Prebuilt binaries for Linux (glibc + musl), macOS (Apple Silicon +
+Intel), and Windows are attached to every
+[GitHub Release](https://github.com/e-kulikov/ruwana/releases).
+
+Linux / macOS:
+
+    curl --proto '=https' --tlsv1.2 -LsSf \
+      https://github.com/e-kulikov/ruwana/releases/latest/download/ruwana-cli-installer.sh | sh
+
+Windows (PowerShell):
+
+    irm https://github.com/e-kulikov/ruwana/releases/latest/download/ruwana-cli-installer.ps1 | iex
+
+From source:
+
+    cargo install --git https://github.com/e-kulikov/ruwana ruwana-cli
 
 ## Quickstart
 
@@ -33,3 +48,27 @@ the single source of truth. Full specification:
 
 Workspace layout: `crates/core` (library `ruwana-core`, all task logic),
 `crates/cli` (binary `ruwana`, argument parsing and output only).
+
+## Releasing
+
+Releases are fully automated ([spec](docs/superpowers/specs/2026-07-06-release-cicd-design.md)):
+
+1. Merge conventional commits to `main` (`feat:` → minor, `fix:` → patch;
+   `feat!:`/`BREAKING CHANGE:` → major — under 0.x, breaking bumps minor).
+2. release-plz maintains a rolling **Release PR** with the version bump
+   and changelog. **Merging that PR is the release.**
+3. The resulting `vX.Y.Z` tag triggers cargo-dist, which builds binaries
+   for all five targets and publishes the GitHub Release.
+
+**The agent contract is the public API**: changes to exact stderr
+strings, the `--format json` schema, exit-code semantics, the on-disk
+TOML format, or command/flag names MUST be committed as `feat!:`/`fix!:`
+(or with a `BREAKING CHANGE:` footer).
+
+### One-time repository setup
+
+- Create a fine-grained PAT (this repo only; permissions: Contents RW +
+  Pull requests RW) and store it as the `RELEASE_PLZ_TOKEN` repo secret —
+  the default `GITHUB_TOKEN` cannot trigger CI on the Release PR.
+- Branch protection on `main`: require the `check` job (CI) to pass;
+  require branches up to date; no force pushes.
