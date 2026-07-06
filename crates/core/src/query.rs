@@ -133,7 +133,7 @@ mod tests {
                 id: id.into(),
                 title: format!("Task {id}"),
                 status,
-                due: due.map(|s| dt(s)),
+                due: due.map(dt),
                 tags: tags.iter().map(|s| s.to_string()).collect(),
                 source: source.iter().map(|s| s.to_string()).collect(),
                 created: dt("2024-01-01T09:00:00+01:00"),
