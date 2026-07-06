@@ -510,3 +510,12 @@ fn wiki_root_defaults_to_home_wiki() {
         .count();
     assert_eq!(entries, 1);
 }
+
+#[test]
+fn version_flag_reports_crate_version() {
+    let mut cmd = Command::cargo_bin("ruwana").unwrap();
+    cmd.arg("--version")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(env!("CARGO_PKG_VERSION")));
+}

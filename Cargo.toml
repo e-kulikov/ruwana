@@ -6,6 +6,7 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+rust-version = "1.85"
 
 [workspace.dependencies]
 ruwana-core = { path = "crates/core" }
