@@ -91,6 +91,16 @@ impl Store {
             path: path.display().to_string(),
             message: e.message().to_string(),
         })?;
+        // Filename-is-ID is a storage invariant (spec: Storage Layout); a
+        // mismatch is corruption, reported exactly like unparseable TOML —
+        // multi-task reads skip it with a warning, direct targets fail loudly.
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        if stem != task.id {
+            return Err(Error::TaskFileParse {
+                path: path.display().to_string(),
+                message: format!("task id {:?} does not match filename", task.id),
+            });
+        }
         Ok(TaskRecord {
             task,
             project: project.to_string(),
@@ -268,6 +278,29 @@ mod tests {
         let w = warnings[0].to_string();
         assert!(w.starts_with("skipping unparseable task file: "), "{w}");
         assert!(w.contains("broken12.toml"), "{w}");
+    }
+
+    #[test]
+    fn load_rejects_file_whose_id_does_not_match_filename() {
+        let (dir, store) = wiki();
+        // A perfectly valid task TOML — but saved under the wrong filename
+        // (e.g. a hand-rename or bad merge). That's corruption.
+        let mismatched = task("bbbbbbbb", "Wrong home");
+        std::fs::create_dir_all(dir.path().join("proj/sub/.ruwana")).unwrap();
+        std::fs::write(
+            dir.path().join("proj/sub/.ruwana/aaaaaaaa.toml"),
+            crate::model::to_toml(&mismatched).unwrap(),
+        )
+        .unwrap();
+
+        // Direct target: loud failure with the invariant in the message.
+        let err = store.load("proj/sub", "aaaaaaaa").unwrap_err();
+        assert!(err.to_string().contains("does not match filename"), "{err}");
+
+        // Multi-task read: skipped with a warning, like unparseable TOML.
+        let (records, warnings) = store.load_project("proj/sub").unwrap();
+        assert_eq!(records.len(), 0);
+        assert_eq!(warnings.len(), 1);
     }
 
     #[test]
