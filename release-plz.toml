@@ -2,6 +2,7 @@
 publish = false               # no crates.io (spec Decision 4)
 git_release_enable = false    # cargo-dist owns the GitHub Release (spec Decision 6)
 git_tag_enable = true
+git_tag_name = "v{{ version }}"  # one shared workspace tag vX.Y.Z, not per-package tags
 semver_check = false          # no public library API commitment yet
 changelog_update = true
 pr_labels = ["release"]

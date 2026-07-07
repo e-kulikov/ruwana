@@ -5,6 +5,12 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
+publish = false
+
+# publish = false above would hide this binary from dist; force-include it
+# (dist's own suggested override for unpublished packages)
+[package.metadata.dist]
+dist = true
 
 [[bin]]
 name = "ruwana"
