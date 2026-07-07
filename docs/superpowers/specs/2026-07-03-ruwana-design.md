@@ -510,11 +510,13 @@ not one shifted across a day boundary by UTC conversion.
 Because the offset is baked in at save time, reads don't re-interpret
 anything — `--overdue` and `--urgent` compare the stored instant to "now"
 directly, regardless of the querying machine's timezone. The one read-time
-timezone rule is `--due <date>` exact matching on `list`: the stored
-instant's calendar date is computed **in the querying machine's local
-timezone** and compared to the requested date — so `--due today` means
-"today where I'm asking from," even if the due date was set from another
-timezone.
+calendar rule is `--due <date>` exact matching on `list`: the stored
+instant's calendar date is read **in its own baked-in offset** — the
+offset that was local at save time — and compared to the requested date.
+Reading the date in the stored offset (never reprojecting through another
+instant's offset) avoids DST reprojection errors that would silently shift
+the calendar date, and means a due date set from a different timezone
+keeps the calendar date of the place where it was set.
 
 Date **filters** (`--created-before` etc.) resolve their argument the same
 way (end of day, local timezone) and compare instants:
@@ -620,8 +622,8 @@ ruwana list [OPTIONS]
 - `--urgent` — open tasks due today or tomorrow (querying machine's local
   calendar)
 
-**Date filters:** `--due <date>` (exact calendar-date match, querying
-timezone), `--created-before/-after <date>`, `--modified-before/-after
+**Date filters:** `--due <date>` (exact calendar-date match, in the
+stored offset), `--created-before/-after <date>`, `--modified-before/-after
 <date>`.
 
 **Tag filter:** `--tag <name>` — repeatable, **AND** semantics (task must
@@ -643,7 +645,7 @@ a3bc9f2e  godel/ai-practice  Review Q3 OKRs        due: 2024-03-01
 b7de1c4a  books              Read Thinking Fast…   overdue
 ```
 
-The due column shows `due: YYYY-MM-DD` (calendar date, querying timezone),
+The due column shows `due: YYYY-MM-DD` (calendar date in the stored offset),
 `overdue` for past-due open tasks, empty when no due date. No output (and
 exit 0) when nothing matches.
 
@@ -764,7 +766,9 @@ All errors print a single-line message to stderr and exit non-zero. Exit
 code is uniformly **1** for all user-facing errors (agents branch on
 zero/non-zero plus the message; finer-grained codes are not needed and
 would be one more thing to keep stable). Internal failures (I/O) also exit
-1 with the underlying error in the message.
+1 with the underlying error in the message. Argument-parsing failures
+(missing required arguments, unknown flags, invalid values) print clap's
+usage text to stderr and also exit 1; `--help`/`--version` exit 0.
 
 | Situation                                         | Exit | Message |
 | ------------------------------------------------- | ---- | ------- |
