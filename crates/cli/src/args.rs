@@ -28,7 +28,7 @@ pub enum Command {
     /// Show one task in full
     Show(ShowArgs),
     /// List the sub-tasks of one task
-    Tasks(TargetArgs),
+    Tasks(LookupArgs),
     /// Update task fields, or rename one sub-task
     #[command(visible_alias = "e")]
     Edit(EditArgs),
@@ -47,6 +47,17 @@ pub struct TargetArgs {
     /// <task-id> or <task-id>:<subtask-id>
     #[arg(long)]
     pub id: Option<String>,
+    /// Project path relative to WIKI_ROOT
+    #[arg(long)]
+    pub project: Option<String>,
+}
+
+/// Positional-only target for `show` and `tasks` — the spec gives `--id`
+/// to done/undone/rm/edit only, so these two commands must not accept it.
+#[derive(Args)]
+pub struct LookupArgs {
+    /// Task ID or exact task title
+    pub id_or_title: String,
     /// Project path relative to WIKI_ROOT
     #[arg(long)]
     pub project: Option<String>,
@@ -120,7 +131,7 @@ pub struct ListArgs {
 #[derive(Args)]
 pub struct ShowArgs {
     #[command(flatten)]
-    pub target: TargetArgs,
+    pub lookup: LookupArgs,
     #[arg(long, value_enum, default_value_t = FormatArg::Text)]
     pub format: FormatArg,
 }

@@ -4,6 +4,7 @@ mod output;
 use args::{Cli, Command, FormatArg, ListArgs, SortArg, TargetArgs};
 use chrono::{DateTime, FixedOffset, Local};
 use clap::Parser;
+use clap::error::ErrorKind;
 use ruwana_core::query::{Filter, SortKey, StatusFilter};
 use ruwana_core::resolve::{Selector, parse_id_selector};
 use ruwana_core::store::{Store, Warning};
@@ -36,7 +37,20 @@ impl From<Error> for CliError {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    // Spec (Error Handling): ALL user-facing errors exit 1 — including
+    // argument-parsing failures, where clap would default to exit 2.
+    // `--help`/`--version` arrive here as Err too and must stay exit 0.
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) if matches!(e.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion) => {
+            e.print().ok();
+            return ExitCode::SUCCESS;
+        }
+        Err(e) => {
+            eprint!("{e}"); // clap errors render their own trailing newline
+            return ExitCode::from(1);
+        }
+    };
     let store = Store::new(wiki_root());
     let now = Local::now().fixed_offset();
     match run(cli.command, &store, now) {
@@ -201,16 +215,23 @@ fn run(command: Command, store: &Store, now: DateTime<FixedOffset>) -> Result<()
             }
         }
         Command::Show(a) => {
-            let (resolved, raw) =
-                ops::show(store, &selector(&a.target)?, a.target.project.as_deref())?;
+            let (resolved, raw) = ops::show(
+                store,
+                &Selector::IdOrTitle(a.lookup.id_or_title.clone()),
+                a.lookup.project.as_deref(),
+            )?;
             print_warnings(&resolved.warnings);
             match a.format {
                 FormatArg::Text => print!("{raw}"),
                 FormatArg::Json => println!("{}", output::show_json(&resolved.record)),
             }
         }
-        Command::Tasks(t) => {
-            let resolved = ops::find(store, &selector(&t)?, t.project.as_deref())?;
+        Command::Tasks(a) => {
+            let resolved = ops::find(
+                store,
+                &Selector::IdOrTitle(a.id_or_title.clone()),
+                a.project.as_deref(),
+            )?;
             print_warnings(&resolved.warnings);
             let text = output::subtasks_text(&resolved.record.task.tasks);
             if !text.is_empty() {

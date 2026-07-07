@@ -393,9 +393,10 @@ fn corrupt_file_is_skipped_with_warning_but_direct_target_fails_loudly() {
         .stdout(predicate::str::contains("Healthy"))
         .stderr(predicate::str::contains("skipping unparseable task file:"));
 
-    // directly targeting the broken file: loud failure
+    // directly targeting the broken file: loud failure (ID-shaped
+    // positional resolves via filename first — same path as --id had)
     ruwana(wiki.path())
-        .args(["show", "--id", "broken12"])
+        .args(["show", "broken12"])
         .assert()
         .code(1)
         .stderr(predicate::str::contains("cannot parse task file:"));
@@ -518,4 +519,26 @@ fn version_flag_reports_crate_version() {
         .assert()
         .success()
         .stdout(predicate::str::contains(env!("CARGO_PKG_VERSION")));
+}
+
+#[test]
+fn clap_usage_error_exits_1_with_usage_text() {
+    // Missing required --project: a parse error, which must exit 1 like
+    // every other user-facing error (spec: Error Handling), not clap's
+    // default 2.
+    let wiki = wiki_with(&["proj"]);
+    ruwana(wiki.path())
+        .args(["add", "X"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("--project"));
+}
+
+#[test]
+fn help_flag_exits_0() {
+    let mut cmd = Command::cargo_bin("ruwana").unwrap();
+    cmd.arg("--help")
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("Usage"));
 }
