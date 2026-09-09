@@ -1,5 +1,6 @@
 use chrono::{DateTime, FixedOffset};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -54,6 +55,22 @@ pub fn to_toml(task: &Task) -> Result<String, toml::ser::Error> {
 
 pub fn from_toml(input: &str) -> Result<Task, toml::de::Error> {
     toml::from_str(input)
+}
+
+pub fn validate(task: &Task) -> Result<(), String> {
+    if !crate::ids::is_task_id_shaped(&task.id) {
+        return Err(format!("invalid task id {:?}", task.id));
+    }
+    let mut seen = HashSet::new();
+    for subtask in &task.tasks {
+        if !crate::ids::is_subtask_id_shaped(&subtask.id) {
+            return Err(format!("invalid sub-task id {:?}", subtask.id));
+        }
+        if !seen.insert(&subtask.id) {
+            return Err(format!("duplicate sub-task id {:?}", subtask.id));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

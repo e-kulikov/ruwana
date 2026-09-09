@@ -18,6 +18,8 @@ pub enum Error {
     InvalidProjectPath,
     #[error("no task found with id: {0}")]
     IdNotFound(String),
+    #[error("ambiguous task id; use --project to narrow: {id} ({projects})")]
+    AmbiguousId { id: String, projects: String },
     #[error("no task found with title: \"{0}\"")]
     TitleNotFound(String),
     #[error("ambiguous title; use --project to narrow or use ID\n{candidates}")]

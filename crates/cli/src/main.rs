@@ -202,7 +202,7 @@ fn run(command: Command, store: &Store, now: DateTime<FixedOffset>) -> Result<()
                 filter: build_filter(&a, now)?,
                 sort: sort_key(a.sort),
             };
-            let (records, warnings) = ops::list(store, &q, now)?;
+            let (records, warnings) = ops::list(store, &q, now, &Local)?;
             print_warnings(&warnings);
             match a.format {
                 FormatArg::Text => {

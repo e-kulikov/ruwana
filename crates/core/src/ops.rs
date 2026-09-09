@@ -1,5 +1,4 @@
 use crate::Error;
-use crate::discover::discover_projects;
 use crate::ids;
 use crate::model::{Status, SubTask, Task};
 use crate::query::{self, Filter, SortKey};
@@ -85,12 +84,18 @@ fn validate_values(field: &str, raw: Vec<String>) -> Result<Vec<String>, Error> 
 
 /// Generate a task ID that is unique across every discovered project —
 /// existence is a filename stat per project (spec: ID Generation).
-fn unique_task_id(store: &Store) -> String {
-    let projects = discover_projects(store.wiki_root());
+fn unique_task_id(store: &Store) -> Result<String, Error> {
+    let projects = store.discover_projects()?;
     loop {
         let id = ids::generate_task_id();
-        if !projects.iter().any(|p| store.task_exists(p, &id)) {
-            return id;
+        if !projects
+            .iter()
+            .map(|p| store.task_exists(p, &id))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .any(|exists| exists)
+        {
+            return Ok(id);
         }
     }
 }
@@ -128,7 +133,7 @@ pub fn add(
         subtasks.push(new_subtask(&text, &subtasks));
     }
     let task = Task {
-        id: unique_task_id(store),
+        id: unique_task_id(store)?,
         title,
         status: Status::Open,
         due: new.due,
@@ -327,17 +332,18 @@ pub struct ListQuery {
 
 /// Gather records (one project, or every discovered project), then
 /// filter + sort in memory (spec: Query Engine).
-pub fn list(
+pub fn list<Tz: chrono::TimeZone>(
     store: &Store,
     q: &ListQuery,
     now: DateTime<FixedOffset>,
+    timezone: &Tz,
 ) -> Result<(Vec<TaskRecord>, Vec<Warning>), Error> {
     let projects = match &q.project {
         Some(p) => {
             store.validate_project(p)?;
             vec![p.clone()]
         }
-        None => discover_projects(store.wiki_root()),
+        None => store.discover_projects()?,
     };
     let mut records = Vec::new();
     let mut warnings = Vec::new();
@@ -346,7 +352,10 @@ pub fn list(
         records.append(&mut project_records);
         warnings.append(&mut project_warnings);
     }
-    Ok((query::apply(records, &q.filter, q.sort, now), warnings))
+    Ok((
+        query::apply(records, &q.filter, q.sort, now, timezone),
+        warnings,
+    ))
 }
 
 /// Resolve one task and return it with the verbatim TOML file contents.
@@ -616,7 +625,7 @@ mod tests {
         let t = add(&store, "proj", new_task("Doomed"), now()).unwrap();
         let resolved = find(&store, &by_id(&t.id), None).unwrap();
         remove(&store, &resolved, later()).unwrap();
-        assert!(!store.task_exists("proj", &t.id));
+        assert!(!store.task_exists("proj", &t.id).unwrap());
     }
 
     #[test]
@@ -649,7 +658,7 @@ mod tests {
         add(&store, "proj", new_task("In proj"), now()).unwrap();
         add(&store, "other", new_task("In other"), now()).unwrap();
 
-        let (all, warnings) = list(&store, &ListQuery::default(), now()).unwrap();
+        let (all, warnings) = list(&store, &ListQuery::default(), now(), &chrono::Local).unwrap();
         assert_eq!(all.len(), 2);
         assert!(warnings.is_empty());
 
@@ -657,7 +666,7 @@ mod tests {
             project: Some("other".into()),
             ..ListQuery::default()
         };
-        let (scoped, _) = list(&store, &scoped_query, now()).unwrap();
+        let (scoped, _) = list(&store, &scoped_query, now(), &chrono::Local).unwrap();
         assert_eq!(scoped.len(), 1);
         assert_eq!(scoped[0].task.title, "In other");
     }
@@ -671,7 +680,8 @@ mod tests {
             .unwrap();
         std::fs::write(dir.path().join("proj/.ruwana/broken12.toml"), "x = [").unwrap();
 
-        let (open_only, warnings) = list(&store, &ListQuery::default(), now()).unwrap();
+        let (open_only, warnings) =
+            list(&store, &ListQuery::default(), now(), &chrono::Local).unwrap();
         assert_eq!(open_only.len(), 1);
         assert_eq!(open_only[0].task.id, t.id);
         assert_eq!(warnings.len(), 1);
@@ -683,7 +693,7 @@ mod tests {
             },
             ..ListQuery::default()
         };
-        let (done_only, _) = list(&store, &done_query, now()).unwrap();
+        let (done_only, _) = list(&store, &done_query, now(), &chrono::Local).unwrap();
         assert_eq!(done_only.len(), 1);
         assert_eq!(done_only[0].task.title, "Done task");
     }
@@ -696,7 +706,7 @@ mod tests {
             ..ListQuery::default()
         };
         assert!(matches!(
-            list(&store, &q, now()),
+            list(&store, &q, now(), &chrono::Local),
             Err(Error::ProjectNotFound(_))
         ));
     }

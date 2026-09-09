@@ -403,6 +403,52 @@ fn corrupt_file_is_skipped_with_warning_but_direct_target_fails_loudly() {
 }
 
 #[test]
+fn list_skips_invalid_utf8_with_one_warning_and_parseable_json() {
+    let wiki = wiki_with(&["proj"]);
+    let id = add_task(wiki.path(), "proj", "Healthy", &[]);
+    std::fs::write(wiki.path().join("proj/.ruwana/badutf8.toml"), [0xff, 0xfe]).unwrap();
+
+    let output = ruwana(wiki.path())
+        .args(["list", "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let tasks: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(tasks.as_array().unwrap().len(), 1);
+    assert_eq!(tasks[0]["id"], id);
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(stderr.lines().count(), 1, "stderr was {stderr:?}");
+    assert!(
+        stderr.contains("skipping unparseable task file:"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("badutf8.toml"), "{stderr}");
+}
+
+#[test]
+fn global_duplicate_id_requires_project_narrowing() {
+    let wiki = wiki_with(&["alpha", "beta"]);
+    let id = add_task(wiki.path(), "alpha", "Alpha copy", &[]);
+    let alpha_file = wiki.path().join(format!("alpha/.ruwana/{id}.toml"));
+    let beta_dir = wiki.path().join("beta/.ruwana");
+    std::fs::create_dir_all(&beta_dir).unwrap();
+    std::fs::copy(alpha_file, beta_dir.join(format!("{id}.toml"))).unwrap();
+
+    ruwana(wiki.path())
+        .args(["done", "--id", &id])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(format!(
+            "ambiguous task id; use --project to narrow: {id} (alpha, beta)"
+        )));
+    ruwana(wiki.path())
+        .args(["show", "--project", "alpha", &id])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Alpha copy"));
+}
+
+#[test]
 fn out_of_band_file_changes_are_visible_immediately() {
     let wiki = wiki_with(&["proj"]);
     let id = add_task(wiki.path(), "proj", "Original", &[]);

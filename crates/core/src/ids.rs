@@ -19,7 +19,15 @@ pub fn generate_subtask_id() -> String {
 }
 
 pub fn is_task_id_shaped(s: &str) -> bool {
-    s.len() == 8
+    is_id_shaped(s, 8)
+}
+
+pub fn is_subtask_id_shaped(s: &str) -> bool {
+    is_id_shaped(s, 4)
+}
+
+fn is_id_shaped(s: &str, len: usize) -> bool {
+    s.len() == len
         && s.bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
 }
@@ -69,5 +77,8 @@ mod tests {
         assert!(!is_task_id_shaped("A3BC9F2E")); // uppercase
         assert!(!is_task_id_shaped("a3bc-f2e")); // punctuation
         assert!(!is_task_id_shaped("Fix tests")); // a title
+        assert!(is_subtask_id_shaped("a3b9"));
+        assert!(!is_subtask_id_shaped("A3B9"));
+        assert!(!is_subtask_id_shaped("a3b"));
     }
 }

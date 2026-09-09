@@ -1,6 +1,6 @@
 use crate::model::Status;
 use crate::store::TaskRecord;
-use chrono::{DateTime, Days, FixedOffset, NaiveDate};
+use chrono::{DateTime, Days, FixedOffset, NaiveDate, TimeZone};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StatusFilter {
@@ -49,7 +49,12 @@ fn local_date(instant: DateTime<FixedOffset>) -> NaiveDate {
     instant.date_naive()
 }
 
-fn matches_status(record: &TaskRecord, status: StatusFilter, now: DateTime<FixedOffset>) -> bool {
+fn matches_status<Tz: TimeZone>(
+    record: &TaskRecord,
+    status: StatusFilter,
+    now: DateTime<FixedOffset>,
+    timezone: &Tz,
+) -> bool {
     let task = &record.task;
     match status {
         StatusFilter::All => true,
@@ -59,20 +64,25 @@ fn matches_status(record: &TaskRecord, status: StatusFilter, now: DateTime<Fixed
         // it isn't in the past until midnight (spec: list filters).
         StatusFilter::Overdue => task.status == Status::Open && task.due.is_some_and(|d| d < now),
         StatusFilter::Urgent => {
-            let today = now.date_naive();
+            let today = now.with_timezone(timezone).date_naive();
             let tomorrow = today + Days::new(1);
             task.status == Status::Open
                 && task.due.is_some_and(|d| {
-                    let date = local_date(d);
+                    let date = d.with_timezone(timezone).date_naive();
                     date == today || date == tomorrow
                 })
         }
     }
 }
 
-fn matches(record: &TaskRecord, filter: &Filter, now: DateTime<FixedOffset>) -> bool {
+fn matches<Tz: TimeZone>(
+    record: &TaskRecord,
+    filter: &Filter,
+    now: DateTime<FixedOffset>,
+    timezone: &Tz,
+) -> bool {
     let task = &record.task;
-    matches_status(record, filter.status, now)
+    matches_status(record, filter.status, now, timezone)
         && filter.tags.iter().all(|t| task.tags.contains(t))
         && (filter.sources.is_empty() || filter.sources.iter().any(|s| task.source.contains(s)))
         && filter
@@ -85,15 +95,16 @@ fn matches(record: &TaskRecord, filter: &Filter, now: DateTime<FixedOffset>) -> 
 }
 
 /// Filter then sort, entirely in memory (spec: Query Engine).
-pub fn apply(
+pub fn apply<Tz: TimeZone>(
     records: Vec<TaskRecord>,
     filter: &Filter,
     sort: SortKey,
     now: DateTime<FixedOffset>,
+    timezone: &Tz,
 ) -> Vec<TaskRecord> {
     let mut out: Vec<TaskRecord> = records
         .into_iter()
-        .filter(|r| matches(r, filter, now))
+        .filter(|r| matches(r, filter, now, timezone))
         .collect();
     match sort {
         // Due ascending, no-due last, created-ascending tiebreak (spec default).
@@ -119,6 +130,21 @@ mod tests {
     // "now" for all tests: 2024-03-13 10:00 +01:00 (a Wednesday)
     fn now() -> chrono::DateTime<chrono::FixedOffset> {
         dt("2024-03-13T10:00:00+01:00")
+    }
+
+    fn apply(
+        records: Vec<TaskRecord>,
+        filter: &Filter,
+        sort: SortKey,
+        now: DateTime<FixedOffset>,
+    ) -> Vec<TaskRecord> {
+        super::apply(
+            records,
+            filter,
+            sort,
+            now,
+            &FixedOffset::east_opt(3600).unwrap(),
+        )
     }
 
     fn rec(
@@ -243,6 +269,58 @@ mod tests {
         assert_eq!(
             ids(&apply(fixture(), &f, SortKey::Title, now())),
             vec!["duetoday", "duetomor"]
+        );
+    }
+
+    #[test]
+    fn urgent_uses_the_querying_timezone_not_the_stored_due_offset() {
+        let now = dt("2024-03-13T23:30:00+00:00");
+        let due = rec(
+            "nearby01",
+            Status::Open,
+            Some("2024-03-15T00:30:00+14:00"),
+            &[],
+            &[],
+        );
+        let filter = Filter {
+            status: StatusFilter::Urgent,
+            ..Filter::default()
+        };
+        assert_eq!(
+            ids(&super::apply(
+                vec![due],
+                &filter,
+                SortKey::Title,
+                now,
+                &FixedOffset::east_opt(0).unwrap(),
+            )),
+            vec!["nearby01"]
+        );
+    }
+
+    #[test]
+    fn urgent_uses_the_querying_timezone_when_stored_offset_is_behind() {
+        let now = dt("2024-03-13T23:30:00+00:00");
+        let due = rec(
+            "nearby02",
+            Status::Open,
+            Some("2024-03-14T23:30:00-10:00"),
+            &[],
+            &[],
+        );
+        let filter = Filter {
+            status: StatusFilter::Urgent,
+            ..Filter::default()
+        };
+        assert_eq!(
+            ids(&super::apply(
+                vec![due],
+                &filter,
+                SortKey::Title,
+                now,
+                &FixedOffset::east_opt(14 * 3600).unwrap(),
+            )),
+            vec!["nearby02"]
         );
     }
 

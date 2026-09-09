@@ -1,6 +1,5 @@
 use crate::Error;
-use crate::discover::discover_projects;
-use crate::ids::is_task_id_shaped;
+use crate::ids::{is_subtask_id_shaped, is_task_id_shaped};
 use crate::store::{Store, TaskRecord, Warning};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,12 +25,6 @@ pub struct Resolved {
     pub warnings: Vec<Warning>,
 }
 
-fn is_subtask_id_shaped(s: &str) -> bool {
-    s.len() == 4
-        && s.bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
-}
-
 /// Validate `--id` syntax: `<task-id>` or `<task-id>:<subtask-id>`.
 pub fn parse_id_selector(input: &str) -> Result<IdSelector, Error> {
     match input.split_once(':') {
@@ -53,19 +46,33 @@ fn candidate_projects(store: &Store, project: Option<&str>) -> Result<Vec<String
             store.validate_project(p)?;
             Ok(vec![p.to_string()])
         }
-        None => Ok(discover_projects(store.wiki_root())),
+        None => store.discover_projects(),
     }
 }
 
 /// ID lookup: the ID is the filename, so this is a stat per project
 /// (spec: Resolution Rules step 1). Loads only on hit.
 fn find_by_id(store: &Store, projects: &[String], id: &str) -> Result<Option<TaskRecord>, Error> {
-    for project in projects {
-        if store.task_exists(project, id) {
-            return store.load(project, id).map(Some);
-        }
+    let hits: Vec<_> = projects
+        .iter()
+        .filter_map(|project| match store.task_exists(project, id) {
+            Ok(true) => Some(Ok(project)),
+            Ok(false) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .collect::<Result<_, _>>()?;
+    match hits.as_slice() {
+        [] => Ok(None),
+        [project] => store.load(project, id).map(Some),
+        _ => Err(Error::AmbiguousId {
+            id: id.to_string(),
+            projects: hits
+                .iter()
+                .map(|project| project.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+        }),
     }
-    Ok(None)
 }
 
 /// Title lookup: exact, case-sensitive (spec: Resolution Rules step 2).
@@ -206,6 +213,12 @@ mod tests {
         store
             .save("beta", &task("dupdupd2", "Same title", vec![]))
             .unwrap();
+        store
+            .save(
+                "beta",
+                &task("abc1de2f", "Duplicate ID", vec![sub("gh7f", "Sub one")]),
+            )
+            .unwrap();
         (dir, store)
     }
 
@@ -248,6 +261,32 @@ mod tests {
         let hit = resolve(&store, &Selector::IdOrTitle("dupdupd2".into()), None).unwrap();
         assert_eq!(hit.record.project, "beta");
         assert!(hit.subtask_id.is_none());
+    }
+
+    #[test]
+    fn global_duplicate_ids_are_ambiguous_for_every_id_selector() {
+        let (_dir, store) = wiki();
+        for selector in [
+            Selector::Id(IdSelector::Task("abc1de2f".into())),
+            Selector::IdOrTitle("abc1de2f".into()),
+            Selector::Id(IdSelector::Compound {
+                task: "abc1de2f".into(),
+                subtask: "gh7f".into(),
+            }),
+        ] {
+            let err = resolve(&store, &selector, None).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                "ambiguous task id; use --project to narrow: abc1de2f (alpha, beta)"
+            );
+        }
+        let scoped = resolve(
+            &store,
+            &Selector::Id(IdSelector::Task("abc1de2f".into())),
+            Some("alpha"),
+        )
+        .unwrap();
+        assert_eq!(scoped.record.project, "alpha");
     }
 
     #[test]
@@ -311,7 +350,7 @@ mod tests {
             task: "abc1de2f".into(),
             subtask: "gh7f".into(),
         });
-        let hit = resolve(&store, &sel, None).unwrap();
+        let hit = resolve(&store, &sel, Some("alpha")).unwrap();
         assert_eq!(hit.subtask_id.as_deref(), Some("gh7f"));
     }
 
@@ -322,7 +361,7 @@ mod tests {
             task: "abc1de2f".into(),
             subtask: "zzzz".into(),
         });
-        let err = resolve(&store, &sel, None).unwrap_err();
+        let err = resolve(&store, &sel, Some("alpha")).unwrap_err();
         assert_eq!(
             err.to_string(),
             "no sub-task found with id: zzzz in task abc1de2f"

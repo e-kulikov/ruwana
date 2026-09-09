@@ -16,8 +16,6 @@ rand = { workspace = true }
 walkdir = { workspace = true }
 rayon = { workspace = true }
 interim = { workspace = true }
-
-[dev-dependencies]
 tempfile = { workspace = true }
 
 [lints]

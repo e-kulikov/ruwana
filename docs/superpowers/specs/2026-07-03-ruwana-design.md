@@ -233,8 +233,8 @@ recursively looking for `.ruwana` directories, with these rules:
 - Follow the directory tree only (no symlink following), to keep the walk
   cheap and cycle-free.
 
-Measured cost (warm cache, ext4): ~0.3 ms at 10 projects, ~2 ms at 50
-projects — see Query Engine.
+Discovery remains a small direct filesystem walk; no benchmark claim is
+made without a committed reproducible harness.
 
 ---
 
@@ -246,43 +246,25 @@ over parsed tasks (`query.rs`); ID lookup doesn't even parse — a task's ID
 *is* its filename, so resolving an ID is a `stat` of `<id>.toml` per
 discovered project.
 
-This is a measured decision, not a simplification shortcut. An earlier
+This is an architectural decision, not a simplification shortcut. An earlier
 draft specified a per-project SQLite index with staleness detection,
-auto-rebuild, and git-hook triggers. Benchmarks on realistic fixtures
-(release build, warm cache, ext4; task files ~0.6–1.1 KB with wiki noise
-around them) showed the index cannot pay for itself at this tool's scale:
-
-| Operation (median) | 10 proj / 500 tasks | 50 proj / 5000 tasks |
-| --- | --- | --- |
-| Discover projects (walk) | ~0.3 ms | ~2 ms |
-| Parse **all** tasks + filter + sort (this design) | ~5–7 ms | ~65–75 ms (~23 ms with rayon) |
-| Per-project SQLite: open N DBs + query + merge | ~1.5 ms | ~11–21 ms |
-| Global SQLite: 1 DB, 1 query | ~0.2 ms | ~2 ms |
-| Index staleness check (readdir+stat, needed **every** command) | ~0.3 ms | ~3.4 ms |
-| Index rebuild (the stale path) | ~25 ms | ~150 ms |
-| ID lookup by filename `stat` (this design) | ~0.005 ms | ~0.05 ms |
-| ID lookup via SQLite | ~0.1 ms | ~0.15 ms |
-
-The structural findings behind the numbers:
+auto-rebuild, and git-hook triggers. Direct reads avoid that additional
+consistency subsystem. The structural rationale is:
 
 - **Correctness forces the index to do the walk anyway.** To be safe
   against `git pull` and hand edits, every indexed command must
   readdir+stat all task files first — the same syscall work direct parsing
-  starts with. The index only ever saves the *parse* step: ~5 ms.
+  starts with. The index only ever saves the parse step.
 - **The index's failure-recovery path is slower than no index.** A rebuild
   is parse-everything *plus* SQLite writes — every `git pull` would put the
   indexed design on a path slower than this design's steady state.
-- **ID lookup is fastest with no index**, because the storage layout
-  already encodes the primary key in the filename (2–20× faster than the
-  SQLite lookup it would replace).
+- **ID lookup needs no index**, because the storage layout already encodes
+  the primary key in the filename.
 - **SQL can't accelerate the hard filters anyway.** Tag matching against a
   delimited text column is a table scan inside SQLite too; the in-memory
   `Vec` filter does identical work without a schema.
 
-At the realistic scale (≤ ~1000 tasks) every command completes in
-single-digit milliseconds — below process-startup noise. At a 10× stress
-scale (5000 tasks) a cross-project `list` is ~23 ms with parallel parsing:
-still imperceptible. What the tool drops in exchange: the SQLite schema
+What the tool drops in exchange: the SQLite schema
 and dependency, staleness detection, auto-rebuild, an `index` subcommand,
 git hook templates, and a gitignore requirement — an entire consistency
 subsystem whose only job would have been defending a 5 ms saving.
@@ -405,8 +387,8 @@ with the parent ID (see "Addressing a Sub-task").
   project; collision → regenerate). At this keyspace a collision is
   effectively never, but the check is nearly free and keeps "globally
   unique" honest.
-- IDs are never reused: deletion removes the file, and new IDs are random,
-  not sequential.
+- Deletion removes the file. New random IDs are overwhelmingly unlikely to
+  reuse a deleted value; no tombstone-backed non-reuse guarantee exists.
 - Sub-task IDs: same charset, 4 characters (36⁴ ≈ 1.68 million), unique
   only within the parent's `tasks` array (collision within the array →
   regenerate). Example: `gh7f`. Global uniqueness would be overkill: a
@@ -507,16 +489,15 @@ offset — e.g. `2024-03-15T23:59:59+01:00` — the same convention used for
 "human-readable at rest": opening the file shows a sensible local due time,
 not one shifted across a day boundary by UTC conversion.
 
-Because the offset is baked in at save time, reads don't re-interpret
-anything — `--overdue` and `--urgent` compare the stored instant to "now"
-directly, regardless of the querying machine's timezone. The one read-time
-calendar rule is `--due <date>` exact matching on `list`: the stored
-instant's calendar date is read **in its own baked-in offset** — the
-offset that was local at save time — and compared to the requested date.
-Reading the date in the stored offset (never reprojecting through another
-instant's offset) avoids DST reprojection errors that would silently shift
-the calendar date, and means a due date set from a different timezone
-keeps the calendar date of the place where it was set.
+Because the offset is baked in at save time, `--overdue` compares stored
+instants to "now" directly. `--urgent` instead projects both the due instant
+and "now" into the querying machine's local calendar. `--due <date>` exact
+matching on `list` reads the stored instant's calendar date in its own
+baked-in offset — the offset that was local at save time — and compares it
+to the requested date. Reading the date in the stored offset, never through
+another instant's offset, avoids DST reprojection errors that silently shift
+the calendar date. A due date set from a different timezone therefore keeps
+the calendar date of the place where it was set.
 
 Date **filters** (`--created-before` etc.) resolve their argument the same
 way (end of day, local timezone) and compare instants:
