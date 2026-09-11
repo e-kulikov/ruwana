@@ -229,6 +229,8 @@ pub fn edit(
     if fields.is_empty() {
         return Err(Error::EmptyEdit);
     }
+    let remove_tags = validate_values("tag", fields.remove_tags)?;
+    let remove_sources = validate_values("source", fields.remove_sources)?;
     let resolved = resolve::resolve(store, selector, project)?;
     let mut record = resolved.record;
     let touched_subtask = match &resolved.subtask_id {
@@ -239,9 +241,9 @@ pub fn edit(
                 (fields.description.is_some(), "description"),
                 (fields.due.is_some(), "due"),
                 (!fields.add_tags.is_empty(), "tag"),
-                (!fields.remove_tags.is_empty(), "remove-tag"),
+                (!remove_tags.is_empty(), "remove-tag"),
                 (!fields.add_sources.is_empty(), "source"),
-                (!fields.remove_sources.is_empty(), "remove-source"),
+                (!remove_sources.is_empty(), "remove-source"),
             ];
             if let Some((_, flag)) = offending.iter().find(|(set, _)| *set) {
                 return Err(Error::FlagInvalidForSubtask {
@@ -276,7 +278,7 @@ pub fn edit(
             record
                 .task
                 .tags
-                .retain(|t| !fields.remove_tags.iter().any(|r| r.trim() == t));
+                .retain(|t| !remove_tags.iter().any(|r| r == t));
             for source in validate_values("source", fields.add_sources)? {
                 if !record.task.source.contains(&source) {
                     record.task.source.push(source);
@@ -285,7 +287,7 @@ pub fn edit(
             record
                 .task
                 .source
-                .retain(|s| !fields.remove_sources.iter().any(|r| r.trim() == s));
+                .retain(|s| !remove_sources.iter().any(|r| r == s));
             None
         }
     };

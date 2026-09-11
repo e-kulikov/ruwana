@@ -1,4 +1,4 @@
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
 #[command(
@@ -38,9 +38,10 @@ pub enum Command {
 }
 
 /// Positional `<id-or-title>` vs `--id` target. Mutual exclusion and
-/// "at least one" are checked in main (not clap groups) so the error
-/// message and exit code match the spec exactly.
+/// Both forms parse together so main can retain its exact exclusivity error;
+/// clap enforces that at least one form is present.
 #[derive(Args)]
+#[command(group(ArgGroup::new("target").args(["id_or_title", "id"]).required(true).multiple(true)))]
 pub struct TargetArgs {
     /// Task ID or exact task title
     pub id_or_title: Option<String>,

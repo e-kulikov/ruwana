@@ -142,7 +142,10 @@ pub fn resolve(
             }
             let (mut hits, warnings) = find_by_title(store, &projects, arg)?;
             match hits.len() {
-                0 => Err(Error::TitleNotFound(arg.clone())),
+                0 => Err(Error::with_warnings(
+                    Error::TitleNotFound(arg.clone()),
+                    warnings,
+                )),
                 1 => Ok(Resolved {
                     record: hits.remove(0),
                     subtask_id: None,
@@ -154,7 +157,10 @@ pub fn resolve(
                         .map(|r| format!("  {}  {}  {}", r.task.id, r.project, r.task.title))
                         .collect::<Vec<_>>()
                         .join("\n");
-                    Err(Error::AmbiguousTitle { candidates })
+                    Err(Error::with_warnings(
+                        Error::AmbiguousTitle { candidates },
+                        warnings,
+                    ))
                 }
             }
         }

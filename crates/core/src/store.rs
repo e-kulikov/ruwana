@@ -189,7 +189,12 @@ impl Store {
         let dir = self.ruwana_dir(project);
         match std::fs::metadata(&dir) {
             Ok(metadata) if metadata.is_dir() => {}
-            Ok(_) => return Ok((Vec::new(), Vec::new())),
+            Ok(_) => {
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotADirectory,
+                    format!("task storage is not a directory: {}", dir.display()),
+                )));
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok((Vec::new(), Vec::new()));
             }
@@ -509,6 +514,14 @@ mod tests {
         let (records, warnings) = store.load_project("proj/sub").unwrap();
         assert!(records.is_empty());
         assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn load_project_rejects_a_file_at_the_ruwana_path() {
+        let (dir, store) = wiki();
+        std::fs::write(dir.path().join("proj/sub/.ruwana"), "not a directory").unwrap();
+        let err = store.load_project("proj/sub").unwrap_err();
+        assert!(matches!(err, Error::Io(ref io) if io.kind() == std::io::ErrorKind::NotADirectory));
     }
 
     #[test]

@@ -449,6 +449,89 @@ fn global_duplicate_id_requires_project_narrowing() {
 }
 
 #[test]
+fn wiki_root_uses_userprofile_when_home_is_missing() {
+    let profile = tempfile::tempdir().unwrap();
+    let expected = profile.path().join("wiki");
+    std::fs::write(&expected, "not a directory").unwrap();
+    let output = Command::cargo_bin("ruwana")
+        .unwrap()
+        .env_remove("WIKI_ROOT")
+        .env_remove("HOME")
+        .env("USERPROFILE", profile.path())
+        .arg("list")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains(&expected.display().to_string()));
+}
+
+#[test]
+fn mutation_commands_require_a_target_but_keep_both_target_error() {
+    let wiki = wiki_with(&["proj"]);
+    let id = add_task(wiki.path(), "proj", "Target", &[]);
+    for command in ["done", "undone", "edit", "rm"] {
+        ruwana(wiki.path())
+            .arg(command)
+            .assert()
+            .code(1)
+            .stderr(predicate::str::contains("Usage:"));
+    }
+    ruwana(wiki.path())
+        .args(["done", &id, "--id", &id])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "--id and a positional id/title are mutually exclusive",
+        ));
+}
+
+#[test]
+fn title_resolution_prints_corruption_warnings_before_terminal_errors() {
+    let wiki = wiki_with(&["proj"]);
+    add_task(wiki.path(), "proj", "Same", &[]);
+    add_task(wiki.path(), "proj", "Same", &[]);
+    std::fs::write(wiki.path().join("proj/.ruwana/broken12.toml"), "not toml [").unwrap();
+    for title in ["Missing", "Same"] {
+        let output = ruwana(wiki.path()).args(["show", title]).output().unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        let warning = stderr.find("skipping unparseable task file:").unwrap();
+        let error = stderr
+            .find(if title == "Same" {
+                "ambiguous title"
+            } else {
+                "no task found with title"
+            })
+            .unwrap();
+        assert!(warning < error, "{stderr}");
+    }
+}
+
+#[test]
+fn blank_remove_values_fail_without_rewriting_task() {
+    let wiki = wiki_with(&["proj"]);
+    let id = add_task(
+        wiki.path(),
+        "proj",
+        "Tagged",
+        &["--tag", "tag", "--source", "source"],
+    );
+    let path = wiki.path().join(format!("proj/.ruwana/{id}.toml"));
+    let before = std::fs::read_to_string(&path).unwrap();
+    for (flag, error) in [
+        ("--remove-tag", "invalid tag: must not be empty"),
+        ("--remove-source", "invalid source: must not be empty"),
+    ] {
+        ruwana(wiki.path())
+            .args(["edit", "--id", &id, flag, " "])
+            .assert()
+            .code(1)
+            .stderr(predicate::str::contains(error));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    }
+}
+
+#[test]
 fn out_of_band_file_changes_are_visible_immediately() {
     let wiki = wiki_with(&["proj"]);
     let id = add_task(wiki.path(), "proj", "Original", &[]);

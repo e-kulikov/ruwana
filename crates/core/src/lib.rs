@@ -1,5 +1,5 @@
 pub mod dates;
-pub mod discover;
+mod discover;
 pub mod ids;
 pub mod model;
 pub mod ops;
@@ -24,6 +24,11 @@ pub enum Error {
     TitleNotFound(String),
     #[error("ambiguous title; use --project to narrow or use ID\n{candidates}")]
     AmbiguousTitle { candidates: String },
+    #[error("{error}")]
+    Resolution {
+        error: Box<Error>,
+        warnings: Vec<store::Warning>,
+    },
     #[error("invalid --id format, expected <task-id> or <task-id>:<subtask-id>")]
     MalformedIdSelector,
     #[error("no sub-task found with id: {subtask} in task {task}")]
@@ -42,4 +47,24 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("{0}")]
     Serialize(#[from] toml::ser::Error),
+}
+
+impl Error {
+    pub fn warnings(&self) -> &[store::Warning] {
+        match self {
+            Self::Resolution { warnings, .. } => warnings,
+            _ => &[],
+        }
+    }
+
+    pub(crate) fn with_warnings(error: Self, warnings: Vec<store::Warning>) -> Self {
+        if warnings.is_empty() {
+            error
+        } else {
+            Self::Resolution {
+                error: Box::new(error),
+                warnings,
+            }
+        }
+    }
 }

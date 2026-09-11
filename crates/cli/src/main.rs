@@ -36,6 +36,15 @@ impl From<Error> for CliError {
     }
 }
 
+impl CliError {
+    fn warnings(&self) -> &[Warning] {
+        match self {
+            Self::Core(error) => error.warnings(),
+            Self::Plain(_) => &[],
+        }
+    }
+}
+
 fn main() -> ExitCode {
     // Spec (Error Handling): ALL user-facing errors exit 1 — including
     // argument-parsing failures, where clap would default to exit 2.
@@ -56,6 +65,7 @@ fn main() -> ExitCode {
     match run(cli.command, &store, now) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
+            print_warnings(e.warnings());
             eprintln!("{e}");
             ExitCode::from(1)
         }
@@ -69,6 +79,7 @@ fn wiki_root() -> PathBuf {
         .unwrap_or_else(|| {
             std::env::var_os("HOME")
                 .map(PathBuf::from)
+                .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join("wiki")
         })
@@ -161,10 +172,21 @@ fn confirm_rm(id: &str, title: &str, force: bool) -> Result<bool, CliError> {
             "refusing to delete without --force in non-interactive mode".into(),
         ));
     }
-    eprint!("delete task {id} \"{title}\"? [y/N] ");
-    std::io::stderr().flush().ok();
+    let mut stderr = std::io::stderr();
+    let mut stdin = std::io::stdin().lock();
+    confirm_rm_with_io(id, title, &mut stdin, &mut stderr)
+}
+
+fn confirm_rm_with_io<R: BufRead, W: Write>(
+    id: &str,
+    title: &str,
+    input: &mut R,
+    output: &mut W,
+) -> Result<bool, CliError> {
+    write!(output, "delete task {id} \"{title}\"? [y/N] ").map_err(Error::Io)?;
+    output.flush().map_err(Error::Io)?;
     let mut line = String::new();
-    std::io::stdin().lock().read_line(&mut line).ok();
+    input.read_line(&mut line).map_err(Error::Io)?;
     Ok(matches!(line.trim(), "y" | "Y" | "yes"))
 }
 
@@ -276,4 +298,31 @@ fn run(command: Command, store: &Store, now: DateTime<FixedOffset>) -> Result<()
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct BrokenWriter;
+
+    impl Write for BrokenWriter {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("prompt failed"))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn confirm_rm_propagates_prompt_output_errors() {
+        let mut input = std::io::Cursor::new(Vec::<u8>::new());
+        let mut output = BrokenWriter;
+        assert!(matches!(
+            confirm_rm_with_io("abc1de2f", "Task", &mut input, &mut output),
+            Err(CliError::Core(Error::Io(_)))
+        ));
+    }
 }
