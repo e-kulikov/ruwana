@@ -39,7 +39,8 @@ From source:
   non-interactive session `rm` without it exits 1 instead of hanging.
 - `--format json` on `list` and `show` is the stable machine interface;
   everything informational is on stderr, stdout is data only.
-- All errors: single-line stderr message, exit code 1.
+- All errors go to stderr and exit 1. Most are single-line; clap parse
+  errors include Usage text and ambiguity diagnostics may include candidates.
 
 ## Development
 

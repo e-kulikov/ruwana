@@ -82,12 +82,22 @@ fn validate_values(field: &str, raw: Vec<String>) -> Result<Vec<String>, Error> 
     Ok(out)
 }
 
-/// Generate a task ID that is unique across every discovered project —
+/// Generate a task ID against the discovered projects and explicit destination —
 /// existence is a filename stat per project (spec: ID Generation).
-fn unique_task_id(store: &Store) -> Result<String, Error> {
-    let projects = store.discover_projects()?;
+fn unique_task_id(store: &Store, project: &str) -> Result<String, Error> {
+    unique_task_id_with(store, project, ids::generate_task_id)
+}
+
+fn unique_task_id_with<F>(store: &Store, project: &str, mut generate: F) -> Result<String, Error>
+where
+    F: FnMut() -> String,
+{
+    let mut projects = store.discover_projects()?;
+    if !projects.iter().any(|candidate| candidate == project) {
+        projects.push(project.to_string());
+    }
     loop {
-        let id = ids::generate_task_id();
+        let id = generate();
         if !projects
             .iter()
             .map(|p| store.task_exists(p, &id))
@@ -133,7 +143,7 @@ pub fn add(
         subtasks.push(new_subtask(&text, &subtasks));
     }
     let task = Task {
-        id: unique_task_id(store)?,
+        id: unique_task_id(store, project)?,
         title,
         status: Status::Open,
         due: new.due,
@@ -418,6 +428,73 @@ mod tests {
             task: task.into(),
             subtask: sub.into(),
         })
+    }
+
+    #[test]
+    fn unique_id_checks_an_explicit_hidden_project_omitted_by_discovery() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".hidden/proj")).unwrap();
+        let store = Store::new(dir.path().to_path_buf());
+        store
+            .save(
+                ".hidden/proj",
+                &Task {
+                    id: "collid01".into(),
+                    title: "Existing".into(),
+                    status: Status::Open,
+                    due: None,
+                    tags: vec![],
+                    source: vec![],
+                    created: now(),
+                    modified: now(),
+                    related: vec![],
+                    description: None,
+                    tasks: vec![],
+                },
+            )
+            .unwrap();
+        assert!(store.discover_projects().unwrap().is_empty());
+        let mut candidates = ["collid01", "freeid02"].into_iter();
+        assert_eq!(
+            unique_task_id_with(&store, ".hidden/proj", || candidates.next().unwrap().into())
+                .unwrap(),
+            "freeid02"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unique_id_checks_an_explicit_symlink_project_omitted_by_discovery() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        symlink(destination.path(), dir.path().join("linked")).unwrap();
+        let store = Store::new(dir.path().to_path_buf());
+        store
+            .save(
+                "linked",
+                &Task {
+                    id: "collid01".into(),
+                    title: "Existing".into(),
+                    status: Status::Open,
+                    due: None,
+                    tags: vec![],
+                    source: vec![],
+                    created: now(),
+                    modified: now(),
+                    related: vec![],
+                    description: None,
+                    tasks: vec![],
+                },
+            )
+            .unwrap();
+        assert!(store.discover_projects().unwrap().is_empty());
+        let mut candidates = ["collid01", "freeid02"].into_iter();
+        assert_eq!(
+            unique_task_id_with(&store, "linked", || candidates.next().unwrap().into()).unwrap(),
+            "freeid02"
+        );
     }
 
     #[test]

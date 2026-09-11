@@ -382,11 +382,12 @@ with the parent ID (see "Addressing a Sub-task").
 
 - Task IDs: 8 characters from `[a-z0-9]` (36 symbols; 36⁸ ≈ 2.8 × 10¹²),
   generated from a CSPRNG. Example: `a3bc9f2e`.
-- On generation, global uniqueness is checked by testing `<id>.toml`
-  existence in every discovered project's `.ruwana/` (one `stat` per
-  project; collision → regenerate). At this keyspace a collision is
-  effectively never, but the check is nearly free and keeps "globally
-  unique" honest.
+- On generation, collision checks cover every globally discovered project
+  plus the explicitly supplied destination project (one `stat` per project;
+  collision → regenerate). Discovery visibility/no-follow rules are
+  unchanged. This is a snapshot check and does not guarantee uniqueness
+  under races. At this keyspace a collision is effectively never, but the
+  check is nearly free and keeps "globally unique" honest.
 - Deletion removes the file. New random IDs are overwhelmingly unlikely to
   reuse a deleted value; no tombstone-backed non-reuse guarantee exists.
 - Sub-task IDs: same charset, 4 characters (36⁴ ≈ 1.68 million), unique
@@ -404,7 +405,8 @@ Every command that takes `<id-or-title>` resolves it in this order:
    check for `<id>.toml` in the given project's `.ruwana/` (or every
    discovered project's, when `--project` is absent). The ID is the
    filename, so this is a `stat`, not a parse. Exactly one match →
-   resolved.
+   resolved; more than one match → `ambiguous task id; use --project to
+   narrow: <id> (<project-a>, <project-b>)`.
 2. Otherwise (or if no ID matched), treat it as a title: **exact,
    case-sensitive** string match on `title` across parsed tasks, scoped by
    `--project` if given.
@@ -743,19 +745,20 @@ hanging — agents must pass `--force`, and this is documented in CLAUDE.md.
 
 ## Error Handling
 
-All errors print a single-line message to stderr and exit non-zero. Exit
-code is uniformly **1** for all user-facing errors (agents branch on
-zero/non-zero plus the message; finer-grained codes are not needed and
-would be one more thing to keep stable). Internal failures (I/O) also exit
-1 with the underlying error in the message. Argument-parsing failures
-(missing required arguments, unknown flags, invalid values) print clap's
-usage text to stderr and also exit 1; `--help`/`--version` exit 0.
+All errors print to stderr and exit non-zero. Most errors are single-line,
+but argument-parsing failures include clap's Usage text and ambiguity
+diagnostics may include candidate lines. Exit code is uniformly **1** for
+all user-facing errors (agents branch on zero/non-zero plus the message;
+finer-grained codes are not needed and would be one more thing to keep
+stable). Internal failures (I/O) also exit 1 with the underlying error in
+the message. `--help`/`--version` exit 0.
 
 | Situation                                         | Exit | Message |
 | ------------------------------------------------- | ---- | ------- |
 | `--project` not found on disk                     | 1    | `project path not found: godel/ai-practice` |
 | `--project` escapes `WIKI_ROOT` (absolute / `..`) | 1    | `invalid project path: must be relative and inside WIKI_ROOT` |
 | ID not found                                      | 1    | `no task found with id: xyz` |
+| ID matches tasks in multiple projects             | 1    | `ambiguous task id; use --project to narrow: xyz (project-a, project-b)` |
 | Title matches 0 tasks                             | 1    | `no task found with title: "..."` |
 | Title matches >1 tasks                            | 1    | `ambiguous title; use --project to narrow or use ID` (candidates listed) |
 | `--id` malformed                                  | 1    | `invalid --id format, expected <task-id> or <task-id>:<subtask-id>` |

@@ -124,12 +124,24 @@ Config `release-plz.toml` (repo root):
 
 ```toml
 [workspace]
-publish = false               # no crates.io
-git_release_enable = false    # cargo-dist owns the GitHub Release
-git_tag_enable = true
-semver_check = false          # no public library API commitment yet
-changelog_update = true
+publish = false                       # no crates.io
+git_only = true                       # repository releases, never crates.io
+release_always = false
+features_always_increment_minor = true # `feat:` bumps minor under 0.x
+git_release_enable = false            # cargo-dist owns the GitHub Release
+git_tag_enable = false
+git_tag_name = "v{{ version }}"        # one shared workspace tag
+semver_check = false                  # no public library API commitment yet
+changelog_update = false
 pr_labels = ["release"]
+
+[[package]]
+name = "ruwana-cli"
+git_tag_enable = true
+git_tag_name = "v{{ version }}"
+changelog_update = true
+changelog_path = "./CHANGELOG.md"
+changelog_include = ["ruwana-core"]
 ```
 
 **Auth gotcha (load-bearing):** PRs created with the default
