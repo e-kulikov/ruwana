@@ -25,6 +25,14 @@ pub struct Resolved {
     pub warnings: Vec<Warning>,
 }
 
+impl Resolved {
+    /// Preserve scan warnings when a caller rejects an already-resolved
+    /// target before performing its mutation.
+    pub fn into_error(self, error: Error) -> Error {
+        Error::with_warnings(error, self.warnings)
+    }
+}
+
 /// Validate `--id` syntax: `<task-id>` or `<task-id>:<subtask-id>`.
 pub fn parse_id_selector(input: &str) -> Result<IdSelector, Error> {
     match input.split_once(':') {

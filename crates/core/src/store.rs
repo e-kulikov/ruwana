@@ -51,7 +51,10 @@ impl Store {
         let rel = Path::new(project);
         let clean = !project.is_empty()
             && rel.is_relative()
-            && rel.components().all(|c| matches!(c, Component::Normal(_)));
+            && rel
+                .components()
+                .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
+            && rel.components().any(|c| matches!(c, Component::Normal(_)));
         if !clean {
             return Err(Error::InvalidProjectPath);
         }
@@ -265,13 +268,14 @@ mod tests {
     }
 
     #[test]
-    fn validate_project_accepts_existing_relative_path() {
+    fn validate_project_accepts_existing_relative_and_dot_prefixed_paths() {
         let (_dir, store) = wiki();
         assert!(store.validate_project("proj/sub").is_ok());
+        assert!(store.validate_project("./proj/sub").is_ok());
     }
 
     #[test]
-    fn validate_project_rejects_missing_absolute_and_dotdot() {
+    fn validate_project_rejects_missing_absolute_and_escaping_paths() {
         let (_dir, store) = wiki();
         assert!(
             matches!(store.validate_project("nope"), Err(Error::ProjectNotFound(p)) if p == "nope")
@@ -282,6 +286,15 @@ mod tests {
         ));
         assert!(matches!(
             store.validate_project("proj/../proj/sub"),
+            Err(Error::InvalidProjectPath)
+        ));
+        assert!(matches!(
+            store.validate_project("./../proj/sub"),
+            Err(Error::InvalidProjectPath)
+        ));
+        #[cfg(windows)]
+        assert!(matches!(
+            store.validate_project(r"C:\outside"),
             Err(Error::InvalidProjectPath)
         ));
     }

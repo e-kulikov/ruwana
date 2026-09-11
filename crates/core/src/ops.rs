@@ -51,6 +51,40 @@ impl EditFields {
             && self.add_sources.is_empty()
             && self.remove_sources.is_empty()
     }
+
+    /// Return the first whole-task-only flag set for a sub-task edit.
+    /// `due_set` lets adapters reject a raw `--due` before parsing it.
+    fn subtask_flag_error(&self, due_set: bool) -> Option<Error> {
+        let offending = [
+            (self.description.is_some(), "description"),
+            (due_set, "due"),
+            (!self.add_tags.is_empty(), "tag"),
+            (!self.remove_tags.is_empty(), "remove-tag"),
+            (!self.add_sources.is_empty(), "source"),
+            (!self.remove_sources.is_empty(), "remove-source"),
+        ];
+        offending
+            .iter()
+            .find(|(set, _)| *set)
+            .map(|(_, flag)| Error::FlagInvalidForSubtask {
+                flag: (*flag).to_string(),
+            })
+    }
+}
+
+/// Whether raw edit arguments need sub-task-only preflight before parsing
+/// whole-task values such as `--due`.
+pub fn edit_needs_subtask_preflight(fields: &EditFields, due_set: bool) -> bool {
+    fields.subtask_flag_error(due_set).is_some()
+}
+
+/// Check target-specific edit rules before an adapter parses whole-task-only
+/// values such as `--due`.
+pub fn preflight_edit(resolved: &Resolved, fields: &EditFields, due_set: bool) -> Option<Error> {
+    resolved
+        .subtask_id
+        .as_ref()
+        .and_then(|_| fields.subtask_flag_error(due_set))
 }
 
 fn validate_title(raw: &str) -> Result<String, Error> {
@@ -239,71 +273,85 @@ pub fn edit(
     if fields.is_empty() {
         return Err(Error::EmptyEdit);
     }
-    let remove_tags = validate_values("tag", fields.remove_tags)?;
-    let remove_sources = validate_values("source", fields.remove_sources)?;
     let resolved = resolve::resolve(store, selector, project)?;
-    let mut record = resolved.record;
-    let touched_subtask = match &resolved.subtask_id {
-        Some(sub_id) => {
-            // Sub-task edit supports --title only (spec: Addressing a
-            // Sub-task). Report the first offending flag by CLI name.
-            let offending = [
-                (fields.description.is_some(), "description"),
-                (fields.due.is_some(), "due"),
-                (!fields.add_tags.is_empty(), "tag"),
-                (!remove_tags.is_empty(), "remove-tag"),
-                (!fields.add_sources.is_empty(), "source"),
-                (!remove_sources.is_empty(), "remove-source"),
-            ];
-            if let Some((_, flag)) = offending.iter().find(|(set, _)| *set) {
-                return Err(Error::FlagInvalidForSubtask {
-                    flag: (*flag).to_string(),
-                });
+    edit_resolved(store, resolved, fields, now)
+}
+
+/// Edit an already-resolved target so adapters can resolve before parsing
+/// whole-task-only values while retaining any resolution warnings.
+pub fn edit_resolved(
+    store: &Store,
+    resolved: Resolved,
+    fields: EditFields,
+    now: DateTime<FixedOffset>,
+) -> Result<ActionReport, Error> {
+    if fields.is_empty() {
+        return Err(resolved.into_error(Error::EmptyEdit));
+    }
+    if let Some(error) = preflight_edit(&resolved, &fields, fields.due.is_some()) {
+        return Err(resolved.into_error(error));
+    }
+    let Resolved {
+        mut record,
+        subtask_id,
+        warnings,
+    } = resolved;
+    let mutation = (|| -> Result<Option<SubTask>, Error> {
+        let touched_subtask = match &subtask_id {
+            Some(sub_id) => {
+                // Sub-task edit supports --title only (spec: Addressing a
+                // Sub-task). Report the first offending flag by CLI name.
+                let text = validate_title(fields.title.as_deref().unwrap_or(""))?;
+                let entry = record
+                    .task
+                    .tasks
+                    .iter_mut()
+                    .find(|s| &s.id == sub_id)
+                    .expect("resolve verified the sub-task exists");
+                entry.text = text;
+                Some(entry.clone())
             }
-            let text = validate_title(fields.title.as_deref().unwrap_or(""))?;
-            let entry = record
-                .task
-                .tasks
-                .iter_mut()
-                .find(|s| &s.id == sub_id)
-                .expect("resolve verified the sub-task exists");
-            entry.text = text;
-            Some(entry.clone())
-        }
-        None => {
-            if let Some(title) = &fields.title {
-                record.task.title = validate_title(title)?;
-            }
-            if let Some(description) = fields.description {
-                record.task.description = Some(description);
-            }
-            if let Some(due) = fields.due {
-                record.task.due = Some(due);
-            }
-            for tag in validate_values("tag", fields.add_tags)? {
-                if !record.task.tags.contains(&tag) {
-                    record.task.tags.push(tag);
+            None => {
+                let remove_tags = validate_values("tag", fields.remove_tags)?;
+                let remove_sources = validate_values("source", fields.remove_sources)?;
+                if let Some(title) = &fields.title {
+                    record.task.title = validate_title(title)?;
                 }
-            }
-            record
-                .task
-                .tags
-                .retain(|t| !remove_tags.iter().any(|r| r == t));
-            for source in validate_values("source", fields.add_sources)? {
-                if !record.task.source.contains(&source) {
-                    record.task.source.push(source);
+                if let Some(description) = fields.description {
+                    record.task.description = Some(description);
                 }
+                if let Some(due) = fields.due {
+                    record.task.due = Some(due);
+                }
+                for tag in validate_values("tag", fields.add_tags)? {
+                    if !record.task.tags.contains(&tag) {
+                        record.task.tags.push(tag);
+                    }
+                }
+                record
+                    .task
+                    .tags
+                    .retain(|t| !remove_tags.iter().any(|r| r == t));
+                for source in validate_values("source", fields.add_sources)? {
+                    if !record.task.source.contains(&source) {
+                        record.task.source.push(source);
+                    }
+                }
+                record
+                    .task
+                    .source
+                    .retain(|s| !remove_sources.iter().any(|r| r == s));
+                None
             }
-            record
-                .task
-                .source
-                .retain(|s| !remove_sources.iter().any(|r| r == s));
-            None
-        }
-    };
-    record.task.modified = now;
-    store.save(&record.project, &record.task)?;
-    Ok(report(&record, touched_subtask, resolved.warnings))
+        };
+        record.task.modified = now;
+        store.save(&record.project, &record.task)?;
+        Ok(touched_subtask)
+    })();
+    match mutation {
+        Ok(touched_subtask) => Ok(report(&record, touched_subtask, warnings)),
+        Err(error) => Err(Error::with_warnings(error, warnings)),
+    }
 }
 
 /// Delete a whole task (file) or one sub-task (entry + modified bump).
@@ -696,6 +744,98 @@ mod tests {
             err.to_string(),
             "--due is not valid when editing a sub-task"
         );
+    }
+
+    #[test]
+    fn edit_subtask_rejects_remove_values_before_validating_them() {
+        let (_dir, store) = wiki();
+        let task = add(
+            &store,
+            "proj",
+            NewTask {
+                subtasks: vec!["Subtask".into()],
+                ..new_task("Parent")
+            },
+            now(),
+        )
+        .unwrap();
+        let subtask = task.tasks[0].id.clone();
+
+        for (fields, expected) in [
+            (
+                EditFields {
+                    remove_tags: vec![" ".into()],
+                    ..EditFields::default()
+                },
+                "--remove-tag is not valid when editing a sub-task",
+            ),
+            (
+                EditFields {
+                    remove_sources: vec![" ".into()],
+                    ..EditFields::default()
+                },
+                "--remove-source is not valid when editing a sub-task",
+            ),
+        ] {
+            let err = edit(&store, &by_sub(&task.id, &subtask), None, fields, later()).unwrap_err();
+            assert_eq!(err.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn edit_resolved_keeps_warnings_on_subtask_preflight_error() {
+        let (_dir, store) = wiki();
+        let task = add(
+            &store,
+            "proj",
+            NewTask {
+                subtasks: vec!["Subtask".into()],
+                ..new_task("Parent")
+            },
+            now(),
+        )
+        .unwrap();
+        let mut resolved = find(&store, &by_sub(&task.id, &task.tasks[0].id), None).unwrap();
+        resolved.warnings.push(Warning("prior warning".into()));
+
+        let err = edit_resolved(
+            &store,
+            resolved,
+            EditFields {
+                remove_tags: vec![" ".into()],
+                ..EditFields::default()
+            },
+            later(),
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "--remove-tag is not valid when editing a sub-task"
+        );
+        assert_eq!(err.warnings()[0].to_string(), "prior warning");
+    }
+
+    #[test]
+    fn edit_resolved_keeps_warnings_on_whole_task_validation_error() {
+        let (_dir, store) = wiki();
+        let task = add(&store, "proj", new_task("Parent"), now()).unwrap();
+        let mut resolved = find(&store, &by_id(&task.id), None).unwrap();
+        resolved.warnings.push(Warning("prior warning".into()));
+
+        let err = edit_resolved(
+            &store,
+            resolved,
+            EditFields {
+                add_tags: vec![" ".into()],
+                ..EditFields::default()
+            },
+            later(),
+        )
+        .unwrap_err();
+
+        assert_eq!(err.to_string(), "invalid tag: must not be empty");
+        assert_eq!(err.warnings()[0].to_string(), "prior warning");
     }
 
     #[test]

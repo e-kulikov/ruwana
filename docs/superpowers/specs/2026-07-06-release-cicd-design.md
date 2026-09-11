@@ -207,7 +207,7 @@ fn version_flag_reports_crate_version() {
     cmd.arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains(env!("CARGO_PKG_VERSION")));
+        .stdout(predicate::eq(format!("ruwana {}\n", env!("CARGO_PKG_VERSION"))));
 }
 ```
 
@@ -319,11 +319,10 @@ documented as "don't, unless the artifact is actively harmful."
       tests only run on Linux until this lands
 - [ ] `aarch64-unknown-linux-gnu` target (ARM servers/containers)
 
-### Out of scope until there's demand
+### Additional platform work out of scope until there's demand
 
-- crates.io publishing (flip `publish` flags + release-plz handles
-  ordering when wanted); macOS/Windows targets; signing; package
-  managers; MSRV CI matrix.
+- Code signing and macOS notarization; ARM Linux and ARM Windows targets.
+  Windows x86_64 and both macOS targets are P0 release targets, not deferred.
 
 ---
 

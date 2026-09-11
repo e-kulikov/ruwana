@@ -212,8 +212,9 @@ Rules:
   is plain committed data. Deleting or de-initializing a submodule removes
   every trace of its tasks; a fresh clone is immediately fully functional.
   Nothing needs gitignoring.
-- `--project` must be a relative path with no `..` components; it is
-  resolved strictly under `$WIKI_ROOT` (reject anything that escapes it).
+- `--project` must be a relative path with no `..` components; a leading
+  `./` is accepted. It is resolved strictly under `$WIKI_ROOT` (reject
+  absolute paths, path prefixes, and anything that escapes it).
 - Path checks are **lexical only**: symlinks inside the wiki are trusted
   and followed. A symlinked project directory that points outside
   `$WIKI_ROOT` is a deliberate user setup, not an attack surface — this is
@@ -267,7 +268,7 @@ consistency subsystem. The structural rationale is:
 What the tool drops in exchange: the SQLite schema
 and dependency, staleness detection, auto-rebuild, an `index` subcommand,
 git hook templates, and a gitignore requirement — an entire consistency
-subsystem whose only job would have been defending a 5 ms saving.
+subsystem whose only job would have been avoiding a parse step.
 
 **Escape hatch.** All file access goes through `store.rs` (see Boundary
 rules). If a wiki ever grows past tens of thousands of tasks, a global
@@ -283,8 +284,8 @@ not brick the whole wiki. A command that *directly targets* a broken file
 (`show abc1de2f`) fails loudly instead — see Error Handling.
 
 **Concurrency.** `ruwana` assumes a single user but not a single process
-(an agent and a human can race). Task-file writes are atomic (pid-unique
-temp file + rename, see Task File Format), and with no derived state there
+(an agent and a human can race). Task-file writes are atomic (randomly named
+same-directory temp file + rename, see Task File Format), and with no derived state there
 is nothing to get out of sync: the worst case for a racing read is seeing
 the file as it was a moment ago, and the worst case for two racing
 *mutations* of the same task is **last-writer-wins** — the slower write
@@ -364,12 +365,12 @@ supported (the file parses fine and is picked up immediately, since there
 is no cache to refresh) but hand-*decorating* is not. Anything worth
 keeping belongs in `description` or `related`.
 
-**Writes are atomic**: write to a uniquely named temp file
-(`<id>.toml.<pid>.tmp`) in the same directory, then rename over the target.
-A crash mid-write never leaves a corrupt task file, and because the temp
-name includes the writing process's pid, two racing writers can never
-share a temp path — a race ends with one complete file cleanly replacing
-the other, never a mix (see Query Engine → Concurrency).
+**Writes are atomic**: write to a randomly named temp file
+(`<id>.toml.<random>.tmp`) in the same directory, then rename over the
+target. A crash mid-write never leaves a corrupt task file, and exclusive
+same-directory temp-file creation means two racing writers cannot share a
+temp path — a race ends with one complete file cleanly replacing the other,
+never a mix (see Query Engine → Concurrency).
 
 **Sub-task IDs.** Each `[[tasks]]` entry has its own `id` — 4 characters
 instead of 8 (see ID Generation), since a sub-task ID only needs to be

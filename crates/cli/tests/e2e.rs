@@ -226,12 +226,22 @@ fn full_subtask_lifecycle() {
         .assert()
         .success();
     ruwana(wiki.path())
-        .args(["edit", "--id", &compound, "--due", "tomorrow"])
+        .args(["edit", "--id", &compound, "--due", "gibberish"])
         .assert()
         .code(1)
         .stderr(predicate::str::contains(
             "--due is not valid when editing a sub-task",
         ));
+    for flag in ["--remove-tag", "--remove-source"] {
+        ruwana(wiki.path())
+            .args(["edit", "--id", &compound, flag, " "])
+            .assert()
+            .code(1)
+            .stderr(predicate::str::contains(format!(
+                "--{} is not valid when editing a sub-task",
+                flag.trim_start_matches("--")
+            )));
+    }
 
     // rm the sub-task: parent file survives, the *other* sub-task remains
     // (each `--task` adds one independent `[[tasks]]`; removing one must
@@ -324,7 +334,19 @@ fn error_table_messages_and_exit_codes() {
             "cannot parse date: \"gibberish\"",
         ),
         (
+            vec!["edit", &id, "--due", "gibberish"],
+            "cannot parse date: \"gibberish\"",
+        ),
+        (
+            vec!["edit", "zzzzzzzz", "--due", "gibberish"],
+            "cannot parse date: \"gibberish\"",
+        ),
+        (
             vec!["edit", &id],
+            "edit requires at least one field to change",
+        ),
+        (
+            vec!["edit", "zzzzzzzz"],
             "edit requires at least one field to change",
         ),
         (vec!["add", "--project", "proj", "   "], "invalid title"),
@@ -647,7 +669,10 @@ fn version_flag_reports_crate_version() {
     cmd.arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains(env!("CARGO_PKG_VERSION")));
+        .stdout(predicate::eq(format!(
+            "ruwana {}\n",
+            env!("CARGO_PKG_VERSION")
+        )));
 }
 
 #[test]

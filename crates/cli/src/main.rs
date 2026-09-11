@@ -6,7 +6,7 @@ use chrono::{DateTime, FixedOffset, Local};
 use clap::Parser;
 use clap::error::ErrorKind;
 use ruwana_core::query::{Filter, SortKey, StatusFilter};
-use ruwana_core::resolve::{Selector, parse_id_selector};
+use ruwana_core::resolve::{IdSelector, Selector, parse_id_selector};
 use ruwana_core::store::{Store, Warning};
 use ruwana_core::{Error, dates, ops};
 use std::io::{BufRead, IsTerminal, Write};
@@ -102,6 +102,18 @@ fn selector(target: &TargetArgs) -> Result<Selector, CliError> {
         (None, Some(id)) => Ok(Selector::Id(parse_id_selector(id)?)),
         (None, None) => Err(CliError::Plain("expected a task id/title or --id".into())),
     }
+}
+
+/// Only a syntactically valid compound `--id` needs target-aware preflight
+/// before parsing whole-task-only values.
+fn has_compound_id(target: &TargetArgs) -> bool {
+    matches!(
+        target
+            .id
+            .as_deref()
+            .and_then(|id| parse_id_selector(id).ok()),
+        Some(IdSelector::Compound { .. })
+    )
 }
 
 fn parse_instant(input: &str, now: DateTime<FixedOffset>) -> Result<DateTime<FixedOffset>, Error> {
@@ -261,28 +273,47 @@ fn run(command: Command, store: &Store, now: DateTime<FixedOffset>) -> Result<()
             }
         }
         Command::Edit(a) => {
-            let fields = ops::EditFields {
+            let mut fields = ops::EditFields {
                 title: a.title,
                 description: a.description,
-                due: a
-                    .due
-                    .as_deref()
-                    .map(|d| parse_instant(d, now))
-                    .transpose()?,
+                due: None,
                 add_tags: a.add_tags,
                 remove_tags: a.remove_tags,
                 add_sources: a.add_sources,
                 remove_sources: a.remove_sources,
             };
-            let report = ops::edit(
-                store,
-                &selector(&a.target)?,
-                a.target.project.as_deref(),
-                fields,
-                now,
-            )?;
-            print_warnings(&report.warnings);
-            println!("{}", output::action_line("edited", &report));
+            let preflight = has_compound_id(&a.target)
+                && ops::edit_needs_subtask_preflight(&fields, a.due.is_some());
+            if preflight {
+                let resolved =
+                    ops::find(store, &selector(&a.target)?, a.target.project.as_deref())?;
+                if let Some(error) = ops::preflight_edit(&resolved, &fields, a.due.is_some()) {
+                    return Err(resolved.into_error(error).into());
+                }
+                fields.due = a
+                    .due
+                    .as_deref()
+                    .map(|d| parse_instant(d, now))
+                    .transpose()?;
+                let report = ops::edit_resolved(store, resolved, fields, now)?;
+                print_warnings(&report.warnings);
+                println!("{}", output::action_line("edited", &report));
+            } else {
+                fields.due = a
+                    .due
+                    .as_deref()
+                    .map(|d| parse_instant(d, now))
+                    .transpose()?;
+                let report = ops::edit(
+                    store,
+                    &selector(&a.target)?,
+                    a.target.project.as_deref(),
+                    fields,
+                    now,
+                )?;
+                print_warnings(&report.warnings);
+                println!("{}", output::action_line("edited", &report));
+            }
         }
         Command::Rm(a) => {
             let resolved = ops::find(store, &selector(&a.target)?, a.target.project.as_deref())?;
