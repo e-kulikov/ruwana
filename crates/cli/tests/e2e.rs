@@ -178,6 +178,51 @@ fn show_json_includes_full_record() {
 }
 
 #[test]
+fn blank_descriptions_normalize_and_nonempty_markdown_is_verbatim() {
+    let wiki = wiki_with(&["proj"]);
+    let blank = add_task(wiki.path(), "proj", "Blank", &["--description", " \t\n"]);
+    let blank_json = ruwana(wiki.path())
+        .args(["show", &blank, "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(blank_json.status.success());
+    assert!(
+        serde_json::from_slice::<serde_json::Value>(&blank_json.stdout).unwrap()["description"]
+            .is_null()
+    );
+    assert!(
+        !std::fs::read_to_string(wiki.path().join(format!("proj/.ruwana/{blank}.toml")))
+            .unwrap()
+            .contains("description")
+    );
+
+    let markdown = "# Heading\n\nParagraph";
+    let rich = add_task(wiki.path(), "proj", "Rich", &["--description", markdown]);
+    let rich_before = ruwana(wiki.path())
+        .args(["show", &rich, "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(rich_before.status.success());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&rich_before.stdout).unwrap()["description"],
+        markdown
+    );
+    ruwana(wiki.path())
+        .args(["edit", "--id", &rich, "--description", " \n\t"])
+        .assert()
+        .success();
+    let rich_json = ruwana(wiki.path())
+        .args(["show", &rich, "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(rich_json.status.success());
+    assert!(
+        serde_json::from_slice::<serde_json::Value>(&rich_json.stdout).unwrap()["description"]
+            .is_null()
+    );
+}
+
+#[test]
 fn full_subtask_lifecycle() {
     let wiki = wiki_with(&["proj"]);
     let id = add_task(

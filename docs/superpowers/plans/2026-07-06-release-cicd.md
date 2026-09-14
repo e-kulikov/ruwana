@@ -186,12 +186,24 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 
 ```toml
 [workspace]
-publish = false               # no crates.io (spec Decision 4)
-git_release_enable = false    # cargo-dist owns the GitHub Release (spec Decision 6)
-git_tag_enable = true
-semver_check = false          # no public library API commitment yet
-changelog_update = true
+publish = false                       # no crates.io (spec Decision 4)
+git_only = true
+release_always = false
+features_always_increment_minor = true
+git_release_enable = false            # cargo-dist owns the GitHub Release (spec Decision 6)
+git_tag_enable = false
+git_tag_name = "v{{ version }}"
+semver_check = false                  # no public library API commitment yet
+changelog_update = false
 pr_labels = ["release"]
+
+[[package]]
+name = "ruwana-cli"
+git_tag_enable = true
+git_tag_name = "v{{ version }}"
+changelog_update = true
+changelog_path = "./CHANGELOG.md"
+changelog_include = ["ruwana-core"]
 ```
 
 - [ ] **Step 2: Write `.github/workflows/release-plz.yml`**

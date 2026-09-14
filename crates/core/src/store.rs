@@ -223,7 +223,7 @@ impl Store {
                 Err(Error::TaskFileParse { path, message }) => warnings.push(Warning(format!(
                     "skipping unparseable task file: {path}: {message}"
                 ))),
-                Err(other) => return Err(other),
+                Err(other) => return Err(Error::with_warnings(other, warnings)),
             }
         }
         Ok((records, warnings))
@@ -313,6 +313,33 @@ mod tests {
         assert!(matches!(
             store.delete("/tmp", "abc1de2f"),
             Err(Error::InvalidProjectPath)
+        ));
+    }
+
+    #[test]
+    fn save_rejects_blank_description() {
+        let (_dir, store) = wiki();
+        let mut invalid = task("abc1de2f", "Description");
+        invalid.description = Some(" \t".into());
+        assert!(matches!(
+            store.save("proj/sub", &invalid),
+            Err(Error::InvalidField { field, reason })
+                if field == "task" && reason == "description must not be empty"
+        ));
+    }
+
+    #[test]
+    fn load_classifies_blank_description_as_corruption() {
+        let (dir, store) = wiki();
+        let mut invalid = task("abc1de2f", "Description");
+        invalid.description = Some("".into());
+        let task_path = dir.path().join("proj/sub/.ruwana/abc1de2f.toml");
+        std::fs::create_dir_all(task_path.parent().unwrap()).unwrap();
+        std::fs::write(&task_path, model::to_toml(&invalid).unwrap()).unwrap();
+
+        assert!(matches!(
+            store.load("proj/sub", "abc1de2f"),
+            Err(Error::TaskFileParse { message, .. }) if message == "description must not be empty"
         ));
     }
 
@@ -426,6 +453,31 @@ mod tests {
         let w = warnings[0].to_string();
         assert!(w.starts_with("skipping unparseable task file: "), "{w}");
         assert!(w.contains("broken12.toml"), "{w}");
+    }
+
+    #[test]
+    fn load_project_preserves_earlier_warnings_on_later_io_error() {
+        let (dir, store) = wiki();
+        let task_dir = dir.path().join("proj/sub/.ruwana");
+        std::fs::create_dir_all(&task_dir).unwrap();
+        std::fs::write(task_dir.join("aaaaaaa1.toml"), "not = valid = toml").unwrap();
+        std::fs::create_dir(task_dir.join("zzzzzzz1.toml")).unwrap();
+
+        let err = store.load_project("proj/sub").unwrap_err();
+
+        assert_eq!(err.warnings().len(), 1);
+        assert!(err.warnings()[0].to_string().contains("aaaaaaa1.toml"));
+        assert!(matches!(err, Error::Resolution { error, .. } if matches!(*error, Error::Io(_))));
+    }
+
+    #[test]
+    fn load_project_fatal_io_without_warnings_is_not_wrapped() {
+        let (dir, store) = wiki();
+        let task_dir = dir.path().join("proj/sub/.ruwana");
+        std::fs::create_dir_all(&task_dir).unwrap();
+        std::fs::create_dir(task_dir.join("zzzzzzz1.toml")).unwrap();
+
+        assert!(matches!(store.load_project("proj/sub"), Err(Error::Io(_))));
     }
 
     #[test]

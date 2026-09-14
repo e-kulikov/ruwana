@@ -59,12 +59,47 @@ impl Error {
 
     pub(crate) fn with_warnings(error: Self, warnings: Vec<store::Warning>) -> Self {
         if warnings.is_empty() {
-            error
-        } else {
+            return error;
+        }
+        match error {
             Self::Resolution {
+                error,
+                warnings: mut later_warnings,
+            } => {
+                let mut warnings = warnings;
+                warnings.append(&mut later_warnings);
+                Self::Resolution { error, warnings }
+            }
+            error => Self::Resolution {
                 error: Box::new(error),
                 warnings,
-            }
+            },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn with_warnings_flattens_existing_resolution_in_encounter_order() {
+        let later = Error::with_warnings(
+            Error::Io(std::io::Error::other("later failure")),
+            vec![store::Warning("later warning".into())],
+        );
+        let merged = Error::with_warnings(later, vec![store::Warning("earlier warning".into())]);
+
+        assert_eq!(
+            merged
+                .warnings()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            ["earlier warning", "later warning"]
+        );
+        assert!(
+            matches!(merged, Error::Resolution { error, .. } if matches!(*error, Error::Io(_)))
+        );
     }
 }

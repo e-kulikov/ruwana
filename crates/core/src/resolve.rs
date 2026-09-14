@@ -92,7 +92,10 @@ fn find_by_title(
     let mut hits = Vec::new();
     let mut warnings = Vec::new();
     for project in projects {
-        let (records, mut project_warnings) = store.load_project(project)?;
+        let (records, mut project_warnings) = match store.load_project(project) {
+            Ok(loaded) => loaded,
+            Err(error) => return Err(Error::with_warnings(error, warnings)),
+        };
         warnings.append(&mut project_warnings);
         hits.extend(records.into_iter().filter(|r| r.task.title == title));
     }
@@ -355,6 +358,34 @@ mod tests {
         )
         .unwrap();
         assert_eq!(hit.record.task.id, "dupdupd2");
+    }
+
+    #[test]
+    fn title_resolution_keeps_earlier_project_warnings_on_later_fatal_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().to_path_buf());
+        let alpha = dir.path().join("alpha/.ruwana");
+        let beta = dir.path().join("beta/.ruwana");
+        std::fs::create_dir_all(&alpha).unwrap();
+        std::fs::create_dir_all(&beta).unwrap();
+        std::fs::write(alpha.join("aaaaaaa1.toml"), "x = [").unwrap();
+        std::fs::write(beta.join("aaaaaaa2.toml"), "x = [").unwrap();
+        std::fs::create_dir(beta.join("zzzzzzz2.toml")).unwrap();
+
+        let err = resolve(&store, &Selector::IdOrTitle("Missing title".into()), None).unwrap_err();
+
+        assert_eq!(err.warnings().len(), 2);
+        assert!(
+            err.warnings()[0]
+                .to_string()
+                .contains(&alpha.join("aaaaaaa1.toml").display().to_string())
+        );
+        assert!(
+            err.warnings()[1]
+                .to_string()
+                .contains(&beta.join("aaaaaaa2.toml").display().to_string())
+        );
+        assert!(matches!(err, Error::Resolution { error, .. } if matches!(*error, Error::Io(_))));
     }
 
     #[test]

@@ -61,6 +61,13 @@ pub fn validate(task: &Task) -> Result<(), String> {
     if !crate::ids::is_task_id_shaped(&task.id) {
         return Err(format!("invalid task id {:?}", task.id));
     }
+    if task
+        .description
+        .as_deref()
+        .is_some_and(|description| description.trim().is_empty())
+    {
+        return Err("description must not be empty".into());
+    }
     let mut seen = HashSet::new();
     for subtask in &task.tasks {
         if !crate::ids::is_subtask_id_shaped(&subtask.id) {
@@ -165,6 +172,13 @@ mod tests {
         }
         let parsed = from_toml(&toml_str).unwrap();
         assert_eq!(task, parsed);
+    }
+
+    #[test]
+    fn blank_description_is_invalid() {
+        let mut task = sample_task();
+        task.description = Some(" \t\n ".into());
+        assert_eq!(validate(&task), Err("description must not be empty".into()));
     }
 
     #[test]

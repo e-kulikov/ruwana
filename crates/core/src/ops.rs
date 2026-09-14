@@ -98,6 +98,11 @@ fn validate_title(raw: &str) -> Result<String, Error> {
     Ok(trimmed.to_string())
 }
 
+/// Empty descriptions are absent; non-empty Markdown stays byte-for-byte.
+fn normalize_description(raw: String) -> Option<String> {
+    (!raw.trim().is_empty()).then_some(raw)
+}
+
 /// Trim, reject empties, dedup preserving first-seen order (spec: Validation).
 fn validate_values(field: &str, raw: Vec<String>) -> Result<Vec<String>, Error> {
     let mut out: Vec<String> = Vec::new();
@@ -186,7 +191,7 @@ pub fn add(
         created: now,
         modified: now,
         related: vec![],
-        description: new.description,
+        description: new.description.and_then(normalize_description),
         tasks: subtasks,
     };
     store.save(project, &task)?;
@@ -216,11 +221,24 @@ pub fn set_done(
     now: DateTime<FixedOffset>,
 ) -> Result<ActionReport, Error> {
     let resolved = resolve::resolve(store, selector, project)?;
-    let mut record = resolved.record;
+    set_done_resolved(store, resolved, done, now)
+}
+
+fn set_done_resolved(
+    store: &Store,
+    resolved: Resolved,
+    done: bool,
+    now: DateTime<FixedOffset>,
+) -> Result<ActionReport, Error> {
+    let Resolved {
+        mut record,
+        subtask_id,
+        warnings,
+    } = resolved;
     // True no-op when already in the requested state: exit success
     // without bumping `modified` or rewriting the file (spec:
     // idempotency — agents retry, retries must not churn the file).
-    let already_there = match &resolved.subtask_id {
+    let already_there = match &subtask_id {
         Some(sub_id) => {
             record
                 .task
@@ -234,13 +252,12 @@ pub fn set_done(
         None => (record.task.status == Status::Done) == done,
     };
     if already_there {
-        let untouched = resolved
-            .subtask_id
+        let untouched = subtask_id
             .as_ref()
             .and_then(|sub_id| record.task.tasks.iter().find(|s| &s.id == sub_id).cloned());
-        return Ok(report(&record, untouched, resolved.warnings));
+        return Ok(report(&record, untouched, warnings));
     }
-    let touched_subtask = match &resolved.subtask_id {
+    let touched_subtask = match &subtask_id {
         Some(sub_id) => {
             // Sub-task: flip the entry only; parent status untouched
             // (spec: Addressing a Sub-task).
@@ -259,8 +276,10 @@ pub fn set_done(
         }
     };
     record.task.modified = now;
-    store.save(&record.project, &record.task)?;
-    Ok(report(&record, touched_subtask, resolved.warnings))
+    match store.save(&record.project, &record.task) {
+        Ok(_) => Ok(report(&record, touched_subtask, warnings)),
+        Err(error) => Err(Error::with_warnings(error, warnings)),
+    }
 }
 
 pub fn edit(
@@ -318,7 +337,7 @@ pub fn edit_resolved(
                     record.task.title = validate_title(title)?;
                 }
                 if let Some(description) = fields.description {
-                    record.task.description = Some(description);
+                    record.task.description = normalize_description(description);
                 }
                 if let Some(due) = fields.due {
                     record.task.due = Some(due);
@@ -408,7 +427,10 @@ pub fn list<Tz: chrono::TimeZone>(
     let mut records = Vec::new();
     let mut warnings = Vec::new();
     for project in &projects {
-        let (mut project_records, mut project_warnings) = store.load_project(project)?;
+        let (mut project_records, mut project_warnings) = match store.load_project(project) {
+            Ok(loaded) => loaded,
+            Err(error) => return Err(Error::with_warnings(error, warnings)),
+        };
         records.append(&mut project_records);
         warnings.append(&mut project_warnings);
     }
@@ -624,6 +646,23 @@ mod tests {
         let reopened = store.load("proj", &t.id).unwrap().task;
         assert_eq!(reopened.status, Status::Open);
         assert_eq!(reopened.modified, even_later());
+    }
+
+    #[test]
+    fn set_done_save_error_preserves_resolution_warnings() {
+        let (dir, store) = wiki();
+        let task = add(&store, "proj", new_task("Target"), now()).unwrap();
+        std::fs::write(dir.path().join("proj/.ruwana/broken12.toml"), "x = [").unwrap();
+        let resolved = find(&store, &Selector::IdOrTitle("Target".into()), None).unwrap();
+        let path = dir.path().join(format!("proj/.ruwana/{}.toml", task.id));
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+
+        let err = set_done_resolved(&store, resolved, true, later()).unwrap_err();
+
+        assert_eq!(err.warnings().len(), 1);
+        assert!(err.warnings()[0].to_string().contains("broken12.toml"));
+        assert!(matches!(err, Error::Resolution { error, .. } if matches!(*error, Error::Io(_))));
     }
 
     #[test]
@@ -888,6 +927,34 @@ mod tests {
         let (scoped, _) = list(&store, &scoped_query, now(), &chrono::Local).unwrap();
         assert_eq!(scoped.len(), 1);
         assert_eq!(scoped[0].task.title, "In other");
+    }
+
+    #[test]
+    fn list_keeps_earlier_project_warnings_on_later_fatal_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().to_path_buf());
+        let alpha = dir.path().join("alpha/.ruwana");
+        let beta = dir.path().join("beta/.ruwana");
+        std::fs::create_dir_all(&alpha).unwrap();
+        std::fs::create_dir_all(&beta).unwrap();
+        std::fs::write(alpha.join("aaaaaaa1.toml"), "x = [").unwrap();
+        std::fs::write(beta.join("aaaaaaa2.toml"), "x = [").unwrap();
+        std::fs::create_dir(beta.join("zzzzzzz2.toml")).unwrap();
+
+        let err = list(&store, &ListQuery::default(), now(), &chrono::Utc).unwrap_err();
+
+        assert_eq!(err.warnings().len(), 2);
+        assert!(
+            err.warnings()[0]
+                .to_string()
+                .contains(&alpha.join("aaaaaaa1.toml").display().to_string())
+        );
+        assert!(
+            err.warnings()[1]
+                .to_string()
+                .contains(&beta.join("aaaaaaa2.toml").display().to_string())
+        );
+        assert!(matches!(err, Error::Resolution { error, .. } if matches!(*error, Error::Io(_))));
     }
 
     #[test]

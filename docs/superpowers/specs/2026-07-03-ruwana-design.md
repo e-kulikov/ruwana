@@ -335,7 +335,8 @@ Field semantics:
 - `id`, `title`, `status`, `created`, `modified` — required. `status` is
   `"open"` or `"done"`; unknown values are a parse error.
 - `due`, `description` — optional; omitted when unset (never written as an
-  empty string).
+  empty string). A blank `--description` normalizes to unset (on `edit`, it
+  clears the existing description); non-blank Markdown is stored verbatim.
 - `tags`, `source`, `related`, `tasks` — optional arrays; omitted when
   empty.
 - All timestamps are RFC 3339 with an explicit UTC offset (see Timezone
@@ -510,9 +511,12 @@ way (end of day, local timezone) and compare instants:
 
 ## Validation
 
-Applied on `add` and `edit`, all producing exit-1 errors:
+Applied on `add` and `edit`:
 
 - `title` / sub-task `text`: non-empty after trimming.
+- `description`: blank `--description` clears/omits it; non-blank Markdown
+  is preserved verbatim. Stored task data may not contain a blank
+  description string.
 - `tags` / `source` values: non-empty, no leading/trailing whitespace
   (trimmed). Duplicate values are deduplicated silently (adding an
   existing tag is a no-op, not an error; removing a missing tag likewise).
