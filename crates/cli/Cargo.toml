@@ -1,0 +1,31 @@
+[package]
+name = "ruwana-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+# publish = false above would hide this binary from dist; force-include it
+# (dist's own suggested override for unpublished packages)
+[package.metadata.dist]
+dist = true
+
+[[bin]]
+name = "ruwana"
+path = "src/main.rs"
+
+[dependencies]
+ruwana-core = { workspace = true }
+clap = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+predicates = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
