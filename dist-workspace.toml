@@ -18,3 +18,8 @@ install-updater = false
 # Skip the plan job on pull requests — release.yml must never run with a
 # write-capable token on PR events
 pr-run-mode = "skip"
+
+# Pin supported macOS images for each binary architecture.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-26"
+x86_64-apple-darwin = "macos-26-intel"
