@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/e-kulikov/ruwana/releases/tag/v0.1.1) - 2026-10-02
+
+### Fixed
+
+- Use supported macOS 26 runners for Apple Silicon and Intel release builds.
+
 ## [0.1.0](https://github.com/e-kulikov/ruwana/releases/tag/v0.1.0) - 2026-09-30
 
 ### Added
